@@ -41,6 +41,7 @@ struct SmartSearchView: View {
     @AppStorage("luma_ollama_base_url") private var ollamaBaseURL: String = "http://127.0.0.1:11434"
     @AppStorage("luma_ollama_model")    private var ollamaModel: String = ""
     @AppStorage("luma_ai_panel_font_size") private var fontSizeRaw: Int = 13
+    @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
 
     @State private var viewState: SearchViewState = .idle
     @State private var inputText: String = ""
@@ -58,6 +59,9 @@ struct SmartSearchView: View {
     @State private var thinkingSteps: [SmartThinkingStep] = []
     @State private var isThinking: Bool = false
     @State private var currentAITask: Task<Void, Never>? = nil
+    /// Incremented whenever a stream starts or is cancelled; stale callbacks compare
+    /// their captured generation against this and bail out.
+    @State private var streamGeneration: Int = 0
 
     // Suggestions
     @State private var searchSuggestions: [String] = []
@@ -103,6 +107,15 @@ struct SmartSearchView: View {
         }
         .onDisappear {
             removeSuggestionKeyMonitor()
+            // The tab may navigate away mid-generation; cancel so orphaned
+            // tasks don't keep running and mutating the messages binding.
+            streamGeneration += 1
+            currentAITask?.cancel()
+            currentAITask = nil
+            streamingTask?.cancel()
+            streamingTask = nil
+            isSending = false
+            isThinking = false
         }
         .sheet(isPresented: $addTabsSheetPresented) {
             SmartAddTabSheet(
@@ -129,9 +142,7 @@ struct SmartSearchView: View {
             switch result {
             case .success(let urls):
                 for url in urls {
-                    guard url.startAccessingSecurityScopedResource() else { continue }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    addDocument(from: url)
+                    addDocument(from: url, securityScoped: true)
                 }
             case .failure(let error):
                 documentError = error.localizedDescription
@@ -152,9 +163,11 @@ struct SmartSearchView: View {
 
     // MARK: - Background
 
+    /// Native macOS surface: under-window material with a near-opaque dark wash,
+    /// like Notes/Music/Xcode. Depth comes from the material, not from color.
     private var background: some View {
         ZStack {
-            VisualEffectView(material: .hudWindow, blendingMode: .behindWindow, state: .active)
+            VisualEffectView(material: .underWindowBackground, blendingMode: .behindWindow, state: .active)
             startPageGlassTint.opacity(startPageGlassTintOpacity)
         }
         .ignoresSafeArea()
@@ -164,8 +177,20 @@ struct SmartSearchView: View {
 
     private var centeredBarLayout: some View {
         GeometryReader { geo in
-            let topOffset = geo.size.height * 0.38
+            let topOffset = geo.size.height * 0.32
             VStack(spacing: 0) {
+                // Quiet greeting above the bar (Siri / ChatGPT-app style)
+                Text(Self.greeting())
+                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.95), Color.white.opacity(0.6)],
+                            startPoint: .top, endPoint: .bottom
+                        )
+                    )
+                    .padding(.bottom, 28)
+                    .accessibilityHidden(true)
+
                 // Context chips above the bar
                 if !includedOtherTabIds.isEmpty || !attachedDocuments.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -490,17 +515,12 @@ struct SmartSearchView: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .frame(maxWidth: SmartTokens.chatMaxWidth)
+            .lunaGlass(cornerRadius: 22, interactive: true)
             .background(
-                RoundedRectangle(cornerRadius: SmartTokens.cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
-            )
-            .background(
-                RoundedRectangle(cornerRadius: SmartTokens.cornerRadius, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: SmartTokens.cornerRadius, style: .continuous)
-                    .stroke(isGlowActive ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1.5)
+                AuroraGlow(
+                    shape: RoundedRectangle(cornerRadius: 22, style: .continuous),
+                    isActive: isGlowActive
+                )
             )
             .animation(.easeInOut(duration: 0.06), value: isGlowActive)
         }
@@ -593,20 +613,14 @@ struct SmartSearchView: View {
             .padding(.top, 6)
             .padding(.bottom, 10)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .lunaGlass(cornerRadius: 22, interactive: true)
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.white.opacity(0.08))
+            AuroraGlow(
+                shape: RoundedRectangle(cornerRadius: 22, style: .continuous),
+                isActive: isGlowActive
+            )
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(
-                    isGlowActive
-                        ? Color.white.opacity(0.25)
-                        : Color.white.opacity(0.09),
-                    lineWidth: 1.5
-                )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .animation(.easeInOut(duration: 0.1), value: isGlowActive)
     }
 
@@ -712,6 +726,16 @@ struct SmartSearchView: View {
         .transition(.opacity)
     }
 
+    /// Time-of-day greeting for the start page.
+    private static func greeting() -> String {
+        switch Calendar.current.component(.hour, from: Date()) {
+        case 5..<12: return "Good Morning"
+        case 12..<17: return "Good Afternoon"
+        case 17..<22: return "Good Evening"
+        default: return "Up Late?"
+        }
+    }
+
     private func applySuggestion(_ row: SmartSuggestionRow) {
         switch row.action {
         case .chat:
@@ -739,6 +763,10 @@ struct SmartSearchView: View {
 
     private func fetchSuggestions(for query: String) {
         suggestionDebounceTask?.cancel()
+        guard searchSuggestionsEnabled else {
+            searchSuggestions = []
+            return
+        }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count >= 2 else {
             searchSuggestions = []
@@ -805,8 +833,12 @@ struct SmartSearchView: View {
     }
 
     private func installSuggestionKeyMonitor() {
+        guard suggestionKeyMonitor == nil else { return }
         suggestionKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard viewState == .idle, hasSuggestions else { return event }
+            // Local monitors are app-wide: with multiple windows, only the key
+            // window's start page should steal arrow keys.
+            guard event.window === NSApp.keyWindow else { return event }
+            guard viewState == .idle, hasSuggestions, isInputFocused else { return event }
             let rows = suggestionRows
             guard !rows.isEmpty else { return event }
 
@@ -858,6 +890,9 @@ struct SmartSearchView: View {
     }
 
     private func stopGenerating() {
+        // Invalidate the generation so late onToken/onCompletion callbacks
+        // from the cancelled task are ignored.
+        streamGeneration += 1
         currentAITask?.cancel()
         currentAITask = nil
         streamingTask?.cancel()
@@ -1016,7 +1051,7 @@ struct SmartSearchView: View {
             if needsWebSearch && detectedURLs.isEmpty {
                 addThinkingStep("Searching the web\u{2026}")
                 do {
-                    let sources = try await WebSearchService.searchAndFetch(query: prompt, maxResults: 3)
+                    let sources = try await WebSearchService.searchAndFetch(query: prompt, maxResults: 4)
                     guard !Task.isCancelled else { return }
                     if !sources.isEmpty {
                         completeLastThinkingStep()
@@ -1042,18 +1077,19 @@ struct SmartSearchView: View {
 
             guard !Task.isCancelled else { return }
 
-            // Dismiss thinking steps and begin streaming
-            await MainActor.run {
-                currentAITask = nil
+            // Dismiss thinking steps and begin streaming.
+            // Track the assistant message by stable id (not index) and by
+            // generation, so Stop/resend can't corrupt the wrong message.
+            let placeholderId = UUID()
+            let generation = await MainActor.run { () -> Int in
                 withAnimation(.easeOut(duration: 0.3)) {
                     thinkingSteps = []
                     isThinking = false
                 }
-                // Append placeholder for the streaming assistant message
-                messages.append(ChatMessage(role: .assistant, text: ""))
+                messages.append(ChatMessage(id: placeholderId, role: .assistant, text: ""))
+                streamGeneration += 1
+                return streamGeneration
             }
-
-            let assistantIndex = await MainActor.run { messages.count - 1 }
 
             if let query = capturedQuery {
                 await MainActor.run { generateAITitle(for: query) }
@@ -1061,14 +1097,15 @@ struct SmartSearchView: View {
 
             let onToken: @Sendable (String) -> Void = { token in
                 Task { @MainActor in
-                    if assistantIndex < messages.count {
-                        messages[assistantIndex].text += token
-                    }
+                    guard generation == streamGeneration,
+                          let idx = messages.firstIndex(where: { $0.id == placeholderId }) else { return }
+                    messages[idx].text += token
                 }
             }
 
             let onCompletion: @Sendable (Result<Void, Error>) -> Void = { result in
                 Task { @MainActor in
+                    guard generation == streamGeneration else { return }
                     streamingTask = nil
                     isSending = false
                     switch result {
@@ -1076,11 +1113,11 @@ struct SmartSearchView: View {
                     case .failure(let error):
                         let msg = error.localizedDescription
                         errorMessage = msg
-                        if assistantIndex < messages.count {
-                            if messages[assistantIndex].text.isEmpty {
-                                messages[assistantIndex].text = "Error: \(msg)"
+                        if let idx = messages.firstIndex(where: { $0.id == placeholderId }) {
+                            if messages[idx].text.isEmpty {
+                                messages[idx].text = "Error: \(msg)"
                             } else {
-                                messages[assistantIndex].text += "\n\n*[Error: \(msg)]*"
+                                messages[idx].text += "\n\n*[Error: \(msg)]*"
                             }
                         }
                     }
@@ -1134,9 +1171,11 @@ struct SmartSearchView: View {
             "this week", "this month", "this year", "news", "score", "scores",
             "price", "cost", "weather", "stock", "release date", "how much",
             "when does", "when did", "when is", "when will", "who won",
+            "who is the", "what happened", "right now", "live",
             "results", "standings", "schedule", "stats", "statistics",
             "reviews", "rating", "ratings", "compare prices", "best deals",
-            "where to buy", "hours", "open now", "near me", "directions"
+            "where to buy", "hours", "open now", "near me", "directions",
+            "election", "earnings", "box office", "trailer", "announced"
         ]
         for trigger in webSearchTriggers {
             if lower.contains(trigger) { return true }
@@ -1311,26 +1350,39 @@ struct SmartSearchView: View {
         }
     }
 
-    private func addDocument(from url: URL) {
+    /// Extracts text on a background task: PDF parsing can take seconds and
+    /// must not block the main thread. The background task owns the security
+    /// scope so sandboxed file access stays valid for the duration of the read.
+    private func addDocument(from url: URL, securityScoped: Bool = false) {
         guard SmartDocumentExtractor.isSupported(url) else {
             documentError = "Unsupported format. Use PDF, TXT, MD, JSON, CSV, XML, or HTML."
             return
         }
-        guard let text = SmartDocumentExtractor.extractText(from: url),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            documentError = "Could not read text from \"\(url.lastPathComponent)\"."
-            return
-        }
-        attachedDocuments.append(SmartAttachedDocument(
-            displayName: url.lastPathComponent,
-            extractedText: text,
-            fileURL: url
-        ))
-        documentError = nil
+        Task {
+            let text = await Task.detached(priority: .userInitiated) { () -> String? in
+                if securityScoped {
+                    guard url.startAccessingSecurityScopedResource() else { return nil }
+                }
+                defer {
+                    if securityScoped { url.stopAccessingSecurityScopedResource() }
+                }
+                return SmartDocumentExtractor.extractText(from: url)
+            }.value
+            guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                documentError = "Could not read text from \"\(url.lastPathComponent)\"."
+                return
+            }
+            attachedDocuments.append(SmartAttachedDocument(
+                displayName: url.lastPathComponent,
+                extractedText: text,
+                fileURL: url
+            ))
+            documentError = nil
 
-        // Auto-enter AI chat when a file is added from the start page
-        if viewState == .idle {
-            enterChatWithContext()
+            // Auto-enter AI chat when a file is added from the start page
+            if viewState == .idle {
+                enterChatWithContext()
+            }
         }
     }
 
@@ -1856,9 +1908,9 @@ private struct SmartAttachedDocument: Identifiable {
 // MARK: - DocumentTextExtractor
 
 private enum SmartDocumentExtractor {
-    static let supportedExtensions: Set<String> = ["pdf", "txt", "md", "json", "csv", "xml", "html"]
+    nonisolated static let supportedExtensions: Set<String> = ["pdf", "txt", "md", "json", "csv", "xml", "html"]
 
-    static func extractText(from url: URL) -> String? {
+    nonisolated static func extractText(from url: URL) -> String? {
         switch url.pathExtension.lowercased() {
         case "pdf": return PDFDocument(url: url)?.string
         case "txt", "md", "json", "csv", "xml", "html":
@@ -1868,7 +1920,7 @@ private enum SmartDocumentExtractor {
         }
     }
 
-    static func isSupported(_ url: URL) -> Bool {
+    nonisolated static func isSupported(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
     }
 }

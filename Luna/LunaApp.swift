@@ -1,13 +1,13 @@
 //
-//  LumaApp.swift
-//  Luma
+//  LunaApp.swift
+//  Luna
 //
-//  Root app entry for the Luma browser.
+//  Root app entry for the Luna browser.
 //
 import SwiftUI
 
 @main
-struct LumaApp: App {
+struct LunaApp: App {
     init() {
         NSWindow.allowsAutomaticWindowTabbing = false
     }

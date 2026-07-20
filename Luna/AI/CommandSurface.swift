@@ -24,9 +24,6 @@ private enum PanelTokens {
     static let cornerRadiusLarge: CGFloat = 18
 }
 
-/// Cross-tab affordance microcopy (≤50 characters).
-private let otherTabsMicrocopy = "Add context from other tabs (coming soon)"
-
 /// Glassmorphism: match start page style (dark grey glassmorphism)
 private let panelGlassTint = Color(red: 0.06, green: 0.06, blue: 0.07)
 private let panelGlassTintOpacity: Double = 0.82
@@ -42,6 +39,7 @@ struct CommandSurfaceView: View {
     let commandRouter: CommandRouter
     let gemini: GeminiClient
     let ollama: OllamaClient
+    let historyManager: HistoryManager
     let onActionProposed: (LLMResponse) -> Void
     
     var tabId: UUID? = nil
@@ -54,13 +52,13 @@ struct CommandSurfaceView: View {
     @State private var errorMessage: String? = nil
     @State private var isSending: Bool = false
     @State private var actionProposedMessage: String? = nil
-    @State private var includeSelection: Bool = false
-    @State private var selectedText: String? = nil
-    @State private var contextSectionExpanded: Bool = false
     @State private var conversationSummary: String? = nil
     @State private var lastSummarizedMessageCount: Int = 0
     /// Active streaming task — cancel to stop generation.
     @State private var streamingTask: Task<Void, Never>? = nil
+    /// Incremented whenever a stream starts or is cancelled; stale callbacks compare
+    /// their captured generation against this and bail out.
+    @State private var streamGeneration: Int = 0
     @FocusState private var isInputFocused: Bool
 
     @State private var pageTitle: String? = nil
@@ -95,23 +93,34 @@ struct CommandSurfaceView: View {
         }
         .background(
             ZStack {
+                // Sidebar-grade material (Xcode assistant style): the window's
+                // backdrop shows through, content stays the focus.
                 VisualEffectView(
-                    material: .hudWindow,
+                    material: .sidebar,
                     blendingMode: .behindWindow,
                     state: .active
                 )
-                panelGlassTint.opacity(panelGlassTintOpacity)
+                panelGlassTint.opacity(panelGlassTintOpacity * 0.8)
             }
         )
         .clipShape(RoundedRectangle(cornerRadius: PanelTokens.cornerRadiusLarge, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: PanelTokens.cornerRadiusLarge, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
         )
         // Load page context only when the sidebar is toggled open (not on every URL change).
         // Auto-reloading on navigation can look like automated scraping to strict sites (e.g. Akamai).
         .onAppear {
+            restoreConversationSummary()
             loadPageContext()
+        }
+        // Parent can remove the panel (tab switch / close) without calling close();
+        // cancel the stream so orphaned tasks don't keep mutating state.
+        .onDisappear {
+            streamGeneration += 1
+            streamingTask?.cancel()
+            streamingTask = nil
+            isSending = false
         }
         .sheet(isPresented: $addTabsSheetPresented) {
             AddTabContextSheet(
@@ -135,9 +144,7 @@ struct CommandSurfaceView: View {
             switch result {
             case .success(let urls):
                 for url in urls {
-                    guard url.startAccessingSecurityScopedResource() else { continue }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    addDocument(from: url)
+                    addDocument(from: url, securityScoped: true)
                 }
             case .failure(let error):
                 documentError = error.localizedDescription
@@ -193,258 +200,10 @@ struct CommandSurfaceView: View {
         loadPageContext() // Reload current page context
     }
 
-    private func statusBadge() -> some View {
-        let (color, label) = statusDotState()
-        return HStack(spacing: 4) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-            Text(label)
-                .font(.system(size: 9, weight: .medium))
-                .foregroundColor(PanelTokens.textSecondary)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Status: \(label)")
-    }
-
-    private func statusDotState() -> (Color, String) {
-        switch aiProvider {
-        case .gemini:
-            if GeminiClient.lastNetworkError != nil {
-                return (.red, "Error")
-            }
-            if KeychainManager.shared.fetchGeminiKey() == nil {
-                return (.gray, "No API key")
-            }
-            return (.green, "Ready")
-        case .ollama:
-            if OllamaClient.lastNetworkError != nil {
-                return (.red, "Error")
-            }
-            if ollamaModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return (.gray, "No local model")
-            }
-            return (.green, "Ready")
-        }
-    }
-
-    // MARK: - Context sources (this page + documents + other tabs teaser)
-
-    private func contextSourcesSection() -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            DisclosureGroup(isExpanded: $contextSectionExpanded) {
-                VStack(alignment: .leading, spacing: 12) {
-                    thisPageBadge()
-                    documentsRow()
-                    otherTabsTeaser()
-                    if contextSectionExpanded {
-                        contextPreviewSnippet()
-                    }
-                }
-                .padding(.top, 8)
-                .padding(.bottom, 4)
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.system(size: 11))
-                        .foregroundColor(PanelTokens.textSecondary)
-                    Text("Context")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(PanelTokens.textPrimary)
-                    contextCountBadge()
-                }
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 10)
-            .background(panelGlassTint.opacity(panelGlassTintOpacity * 0.75))
-            .tint(PanelTokens.textSecondary)
-            .accessibilityLabel("Context sources")
-            .accessibilityHint("Expand to see page, documents, and what will be sent")
-        }
-    }
-
-    @ViewBuilder
-    private func thisPageBadge() -> some View {
-        HStack(spacing: 6) {
-            if isLoadingContext {
-                ProgressView()
-                    .scaleEffect(0.7)
-                    .tint(PanelTokens.textSecondary)
-            } else {
-                Image(systemName: "globe")
-                    .font(.system(size: 10))
-                    .foregroundColor(PanelTokens.textSecondary)
-            }
-            Text(thisPageLabel())
-                .font(.system(size: 11))
-                .foregroundColor(PanelTokens.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(PanelTokens.surfaceElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .accessibilityLabel("This page: \(thisPageLabel())")
-    }
-
     private func thisPageLabel() -> String {
         if let title = pageTitle, !title.isEmpty { return title }
         if let host = webViewWrapper.currentURL?.host { return host }
         return "Loading…"
-    }
-
-    @ViewBuilder
-    private func contextCountBadge() -> some View {
-        let count = 1 + (attachedDocuments.isEmpty ? 0 : attachedDocuments.count)
-        if count > 0 {
-            Text("\(count)")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(PanelTokens.textTertiary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(PanelTokens.surfaceElevated)
-                .clipShape(Capsule())
-        }
-    }
-
-    private func documentsRow() -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Documents")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(PanelTokens.textSecondary)
-                if !attachedDocuments.isEmpty {
-                    Text("(\(attachedDocuments.count))")
-                        .font(.caption2)
-                        .foregroundColor(PanelTokens.textTertiary)
-                }
-                Spacer()
-                Button(action: { documentPickerPresented = true }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 11))
-                        Text("Add file")
-                            .font(.system(size: 11))
-                    }
-                    .foregroundColor(PanelTokens.accent)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Add file")
-                .accessibilityHint("Attach a document for AI context")
-            }
-            if let err = documentError {
-                Text(err)
-                    .font(.system(size: 10))
-                    .foregroundColor(PanelTokens.errorText)
-                    .lineLimit(2)
-                    .accessibilityLabel("Document error: \(err)")
-            }
-            if attachedDocuments.isEmpty {
-                Text("No documents")
-                    .font(.system(size: 11))
-                    .foregroundColor(PanelTokens.textTertiary)
-                    .padding(.vertical, 4)
-                    .accessibilityLabel("No documents attached")
-            } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(attachedDocuments) { doc in
-                            documentChip(doc)
-                        }
-                    }
-                }
-                .frame(maxHeight: 36)
-            }
-        }
-        .onDrop(of: [.fileURL, .pdf, .plainText, .utf8PlainText], isTargeted: nil) { providers in
-            handleDocumentDrop(providers: providers)
-        }
-        .fileImporter(
-            isPresented: $documentPickerPresented,
-            allowedContentTypes: [UTType.pdf, .plainText, .utf8PlainText, .commaSeparatedText, .xml, .html],
-            allowsMultipleSelection: true
-        ) { result in
-            documentError = nil
-            switch result {
-            case .success(let urls):
-                for url in urls {
-                    guard url.startAccessingSecurityScopedResource() else { continue }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    addDocument(from: url)
-                }
-            case .failure(let error):
-                documentError = error.localizedDescription
-            }
-        }
-    }
-
-    private func documentChip(_ doc: AttachedDocument) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: doc.displayName.lowercased().hasSuffix(".pdf") ? "doc.fill" : "doc.text.fill")
-                .font(.system(size: 10))
-                .foregroundColor(PanelTokens.textSecondary)
-            Text(doc.displayName)
-                .font(.system(size: 11))
-                .foregroundColor(PanelTokens.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Button(action: { removeAttachedDocument(id: doc.id) }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 12))
-                    .foregroundColor(PanelTokens.textSecondary)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Remove \(doc.displayName)")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(PanelTokens.surfaceElevated)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private func otherTabsTeaser() -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "square.stack.3d.up")
-                .font(.system(size: 10))
-                .foregroundColor(PanelTokens.textTertiary)
-            Text(otherTabsMicrocopy)
-                .font(.system(size: 10))
-                .foregroundColor(PanelTokens.textTertiary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(PanelTokens.surfaceElevated.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .accessibilityLabel(otherTabsMicrocopy)
-        .accessibilityHint("Feature not yet available")
-    }
-
-    @ViewBuilder
-    private func contextPreviewSnippet() -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let url = webViewWrapper.currentURL {
-                Text(url.absoluteString)
-                    .font(.system(size: 10))
-                    .foregroundColor(PanelTokens.textTertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            if let text = pageText, !text.isEmpty {
-                Text("\(text.prefix(180))\(text.count > 180 ? "…" : "")")
-                    .font(.system(size: 10))
-                    .foregroundColor(PanelTokens.textTertiary)
-                    .lineLimit(3)
-            }
-            if includeSelection, let sel = selectedText, !sel.isEmpty {
-                Text("Selection: \(sel.prefix(80))\(sel.count > 80 ? "…" : "")")
-                    .font(.system(size: 10))
-                    .foregroundColor(PanelTokens.textTertiary)
-                    .lineLimit(2)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Conversation stream
@@ -488,17 +247,28 @@ struct CommandSurfaceView: View {
     }
 
     private func emptyConversationState() -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "bubble.left.and.bubble.right")
-                .font(.system(size: 32))
-                .foregroundColor(Color.white.opacity(0.3))
+        VStack(spacing: 14) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color(red: 0.55, green: 0.72, blue: 1.0),
+                                 Color(red: 0.78, green: 0.58, blue: 1.0)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    )
+                )
+                .symbolRenderingMode(.hierarchical)
             Text("Ask about this page")
-                .font(.system(size: 13))
-                .foregroundColor(Color.white.opacity(0.5))
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(Color.white.opacity(0.85))
+            Text("Summarize, explain, or find anything — with this page as context.")
+                .font(.system(size: 12))
+                .foregroundColor(Color.white.opacity(0.45))
                 .multilineTextAlignment(.center)
+                .frame(maxWidth: 240)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
+        .padding(.vertical, 60)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("No messages yet. Ask about this page.")
     }
@@ -646,17 +416,13 @@ struct CommandSurfaceView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
+            .lunaGlass(cornerRadius: 20, interactive: true)
             .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.ultraThinMaterial)
-            )
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(isGlowActive ? Color.white.opacity(0.25) : Color.clear, lineWidth: 1.5)
+                AuroraGlow(
+                    shape: RoundedRectangle(cornerRadius: 20, style: .continuous),
+                    isActive: isGlowActive,
+                    lineWidth: 1.5
+                )
             )
             .animation(.easeInOut(duration: 0.06), value: isGlowActive)
             .accessibilityLabel("Message input")
@@ -675,12 +441,6 @@ struct CommandSurfaceView: View {
         leadingSymbol: String? = nil
     ) -> some View {
         ContextTabView(label: label, isCurrentTab: isCurrentTab, leadingSymbol: leadingSymbol, onRemove: onRemove)
-    }
-
-    private func sendIfEnter() {
-        if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            sendCommand()
-        }
     }
 
     private struct ChatBubble: View {
@@ -776,165 +536,40 @@ struct CommandSurfaceView: View {
     }
 
     private func openLinkInNewTab(_ url: URL) {
-        // Open URL in a new browser tab
+        // Only allow web schemes; model-generated markdown could contain
+        // javascript:/file:/data: links which must never navigate the browser.
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return }
         if let tabManager = webViewWrapper.tabManager {
             let newTabId = tabManager.newTab(url: url)
             webViewWrapper.load(url: url, in: newTabId)
         }
     }
 
-    private func fetchSelectedText() {
-        webViewWrapper.evaluateSelectedText { text in
-            selectedText = text
-        }
-    }
-
-    // Legacy contextPreviewContent removed; see contextPreviewSnippet() and contextSourcesSection()
-
-    @ViewBuilder
-    private func _unused_contextPreviewContent() -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let url = webViewWrapper.currentURL {
-                Text("URL: \(url.absoluteString)")
-                    .foregroundColor(Color(white: 0.65))
-                    .lineLimit(1)
-            }
-            if let title = pageTitle, !title.isEmpty {
-                Text("Title: \(title)")
-                    .foregroundColor(Color(white: 0.65))
-                    .lineLimit(1)
-            }
-            if let text = pageText, !text.isEmpty {
-                Text("Page: \(text.prefix(200))\(text.count > 200 ? "…" : "")")
-                    .foregroundColor(Color(white: 0.65))
-                    .lineLimit(3)
-            }
-            if includeSelection, let sel = selectedText, !sel.isEmpty {
-                Text("Selection: \(sel.prefix(100))\(sel.count > 100 ? "…" : "")")
-                    .foregroundColor(Color(white: 0.65))
-                    .lineLimit(2)
-            }
-            if !attachedDocuments.isEmpty {
-                Text("Documents: \(attachedDocuments.map(\.displayName).joined(separator: ", "))")
-                    .foregroundColor(Color(white: 0.65))
-                    .lineLimit(2)
-                ForEach(attachedDocuments) { doc in
-                    Text("  “\(doc.displayName)”: \(doc.extractedText.prefix(80))\(doc.extractedText.count > 80 ? "…" : "")")
-                        .foregroundColor(Color(white: 0.55))
-                        .lineLimit(1)
-                }
-            }
-            if isLoadingContext {
-                ProgressView()
-                    .scaleEffect(0.6)
-                    .tint(.white)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private func attachedDocumentsSection() -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Attached documents")
-                    .font(.caption)
-                    .foregroundColor(PanelTokens.textSecondary)
-                if !attachedDocuments.isEmpty {
-                    Text("(\(attachedDocuments.count))")
-                        .font(.caption2)
-                        .foregroundColor(PanelTokens.textSecondary.opacity(0.8))
-                }
-                Spacer()
-                Button(action: { documentPickerPresented = true }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 12))
-                        Text("Add file")
-                            .font(.caption)
-                    }
-                    .foregroundColor(PanelTokens.accent)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 6)
-
-            if let err = documentError {
-                Text(err)
-                    .font(.caption2)
-                    .foregroundColor(.red.opacity(0.9))
-                    .padding(.horizontal, 18)
-            }
-
-            if !attachedDocuments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(attachedDocuments) { doc in
-                            HStack(spacing: 6) {
-                                Image(systemName: doc.displayName.hasSuffix(".pdf") ? "doc.fill" : "doc.text.fill")
-                                    .font(.system(size: 10))
-                                    .foregroundColor(PanelTokens.textSecondary)
-                                Text(doc.displayName)
-                                    .font(.caption)
-                                    .foregroundColor(PanelTokens.textPrimary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Button(action: { removeAttachedDocument(id: doc.id) }) {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(PanelTokens.textSecondary)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 5)
-                            .background(Color(white: 0.14))
-                            .clipShape(Capsule())
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 6)
-                }
-                .frame(maxHeight: 32)
-            }
-        }
-        .background(PanelTokens.panelBgSecondary.opacity(0.6))
-        .onDrop(of: [.fileURL, .pdf, .plainText, .utf8PlainText], isTargeted: nil) { providers in
-            handleDocumentDrop(providers: providers)
-        }
-        .fileImporter(
-            isPresented: $documentPickerPresented,
-            allowedContentTypes: [UTType.pdf, .plainText, .utf8PlainText, .commaSeparatedText, .xml, .html],
-            allowsMultipleSelection: true
-        ) { result in
-            documentError = nil
-            switch result {
-            case .success(let urls):
-                for url in urls {
-                    guard url.startAccessingSecurityScopedResource() else { continue }
-                    defer { url.stopAccessingSecurityScopedResource() }
-                    addDocument(from: url)
-                }
-            case .failure(let error):
-                documentError = error.localizedDescription
-            }
-        }
-    }
-
-    private func addDocument(from url: URL) {
+    /// Extracts text on a background task: PDF parsing can take seconds and
+    /// must not block the main thread. The background task owns the security
+    /// scope so sandboxed file access stays valid for the duration of the read.
+    private func addDocument(from url: URL, securityScoped: Bool = false) {
         guard DocumentTextExtractor.isSupported(url) else {
             documentError = "Unsupported format. Use PDF, TXT, MD, JSON, CSV, XML, or HTML."
             return
         }
-        guard let text = DocumentTextExtractor.extractText(from: url), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            documentError = "Could not read text from “\(url.lastPathComponent)”."
-            return
+        Task {
+            let text = await Task.detached(priority: .userInitiated) { () -> String? in
+                if securityScoped {
+                    guard url.startAccessingSecurityScopedResource() else { return nil }
+                }
+                defer {
+                    if securityScoped { url.stopAccessingSecurityScopedResource() }
+                }
+                return DocumentTextExtractor.extractText(from: url)
+            }.value
+            guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                documentError = "Could not read text from “\(url.lastPathComponent)”."
+                return
+            }
+            attachedDocuments.append(AttachedDocument(displayName: url.lastPathComponent, extractedText: text, fileURL: url))
+            documentError = nil
         }
-        let name = url.lastPathComponent
-        let doc = AttachedDocument(displayName: name, extractedText: text, fileURL: url)
-        attachedDocuments.append(doc)
-        documentError = nil
     }
 
     private func removeAttachedDocument(id: UUID) {
@@ -1070,8 +705,19 @@ struct CommandSurfaceView: View {
     }
 
     private func sendCommand() {
+        // A send while a stream is active would corrupt message indices; require Stop first.
+        guard !isSending else { return }
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
+        if let tabManager = webViewWrapper.tabManager,
+           let response = commandRouter.proposal(for: trimmed, tabManager: tabManager) {
+            messages.append(ChatMessage(role: .user, text: trimmed))
+            messages.append(ChatMessage(role: .assistant, text: response.text))
+            inputText = ""
+            onActionProposed(response)
+            return
+        }
 
         isSending = true
         errorMessage = nil
@@ -1091,6 +737,9 @@ struct CommandSurfaceView: View {
     }
 
     private func stopStreaming() {
+        // Invalidate the current stream generation so late onToken/onCompletion
+        // callbacks from the cancelled task are ignored.
+        streamGeneration += 1
         streamingTask?.cancel()
         streamingTask = nil
         isSending = false
@@ -1115,15 +764,20 @@ struct CommandSurfaceView: View {
             pageTitle: pageTitle
         )
         messages.append(placeholder)
-        let assistantIndex = messages.count - 1
+        // Track by stable message id (indices go stale when messages are
+        // removed/edited) and by generation (stale callbacks after Stop must not run).
+        let placeholderId = placeholder.id
+        streamGeneration += 1
+        let generation = streamGeneration
 
         let onToken: (String) -> Void = { token in
-            if assistantIndex < messages.count {
-                messages[assistantIndex].text += token
-            }
+            guard generation == streamGeneration,
+                  let idx = messages.firstIndex(where: { $0.id == placeholderId }) else { return }
+            messages[idx].text += token
         }
 
         let onCompletion: (Result<Void, Error>) -> Void = { result in
+            guard generation == streamGeneration else { return }
             isSending = false
             streamingTask = nil
             switch result {
@@ -1132,11 +786,11 @@ struct CommandSurfaceView: View {
             case .failure(let error):
                 let msg = error.localizedDescription
                 errorMessage = msg
-                if assistantIndex < messages.count {
-                    if messages[assistantIndex].text.isEmpty {
-                        messages[assistantIndex].text = "Error: \(msg)"
+                if let idx = messages.firstIndex(where: { $0.id == placeholderId }) {
+                    if messages[idx].text.isEmpty {
+                        messages[idx].text = "Error: \(msg)"
                     } else {
-                        messages[assistantIndex].text += "\n\n*[Error: \(msg)]*"
+                        messages[idx].text += "\n\n*[Error: \(msg)]*"
                     }
                 }
             }
@@ -1172,8 +826,11 @@ struct CommandSurfaceView: View {
         
         if messagesToSummarize >= 8 {
             let messagesToProcess = Array(messages.suffix(messagesToSummarize))
-            
-            gemini.summarizeConversation(messages: messagesToProcess) { result in
+            // Capture the summarized span now: messages can grow while the
+            // summarize request is in flight, which would corrupt the range.
+            let summarizedUpTo = messages.count
+
+            let completion: (Result<String, Error>) -> Void = { result in
                 DispatchQueue.main.async {
                     switch result {
                     case .success(let summary):
@@ -1183,16 +840,16 @@ struct CommandSurfaceView: View {
                         } else {
                             conversationSummary = summary
                         }
-                        lastSummarizedMessageCount = messages.count
-                        
+                        lastSummarizedMessageCount = summarizedUpTo
+
                         // Save summary to history if we have a tab ID
                         if let tabId = tabId {
                             let summaryObj = ConversationSummary(
                                 tabId: tabId,
                                 summary: summary,
-                                messageRange: (messages.count - messagesToSummarize)...(messages.count - 1)
+                                messageRange: (summarizedUpTo - messagesToSummarize)...(summarizedUpTo - 1)
                             )
-                            HistoryManager.shared.addConversationSummary(tabId: tabId, summary: summaryObj)
+                            historyManager.addConversationSummary(tabId: tabId, summary: summaryObj)
                         }
                         
                     case .failure:
@@ -1201,7 +858,25 @@ struct CommandSurfaceView: View {
                     }
                 }
             }
+            switch aiProvider {
+            case .gemini:
+                gemini.summarizeConversation(messages: messagesToProcess, completion: completion)
+            case .ollama:
+                ollama.summarizeConversation(
+                    baseURLString: ollamaBaseURL,
+                    model: ollamaModel,
+                    messages: messagesToProcess,
+                    completion: completion
+                )
+            }
         }
+    }
+
+    private func restoreConversationSummary() {
+        guard let tabId else { return }
+        let summaries = historyManager.getSummariesForTab(tabId: tabId)
+        conversationSummary = summaries.last?.summary
+        lastSummarizedMessageCount = summaries.last.map { $0.messageRange.upperBound + 1 } ?? 0
     }
 }
 
@@ -1583,9 +1258,9 @@ private struct AddTabContextSheet: View {
 }
 
 private enum DocumentTextExtractor {
-    static let supportedExtensions: Set<String> = ["pdf", "txt", "md", "json", "csv", "xml", "html"]
+    nonisolated static let supportedExtensions: Set<String> = ["pdf", "txt", "md", "json", "csv", "xml", "html"]
 
-    static func extractText(from url: URL) -> String? {
+    nonisolated static func extractText(from url: URL) -> String? {
         let ext = url.pathExtension.lowercased()
         switch ext {
         case "pdf":
@@ -1599,7 +1274,7 @@ private enum DocumentTextExtractor {
         }
     }
 
-    static func isSupported(_ url: URL) -> Bool {
+    nonisolated static func isSupported(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
     }
 }

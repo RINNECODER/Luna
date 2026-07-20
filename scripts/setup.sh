@@ -62,4 +62,4 @@ else
 fi
 
 echo ""
-echo "🎉 Setup complete! Open Luma.xcodeproj in Xcode and build (⌘R)."
+echo "🎉 Setup complete! Open Luna.xcodeproj in Xcode and build (⌘R)."

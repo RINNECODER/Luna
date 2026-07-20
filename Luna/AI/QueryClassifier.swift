@@ -2,7 +2,7 @@
 // Default: AI chat. Only routes to search for clear navigational/lookup intent.
 import Foundation
 
-enum QueryIntent {
+enum QueryIntent: Equatable {
     case search
     case ai
 }

@@ -3,36 +3,20 @@ import Foundation
 import SwiftUI
 import Combine
 
-/// A single entry in the local navigation history (last N navigations across tabs).
-struct HistoryEntry: Identifiable {
-    let id = UUID()
-    let date: Date
-    let title: String
-    let url: URL
-}
-
 /// Manages browser tab lifecycle and navigation state.
 ///
 /// Per SRS F1 and AGENTS.md: All browser actions must be deterministic and visible.
-/// No persistence in MVP (SRS 2.3).
 final class TabManager: ObservableObject {
     @Published var tabOrder: [UUID] = []
     @Published var tabURL: [UUID: URL?] = [:]
     @Published var tabTitle: [UUID: String] = [:]
     @Published var currentTab: UUID? = nil
 
-    /// Last N navigations (local only, non-persisted). Cmd+Y shows this list.
-    @Published private(set) var navigationHistory: [HistoryEntry] = []
-    private let maxHistoryCount = 100
-
-    /// Records a navigation for the history sheet (Cmd+Y).
-    func addNavigation(title: String, url: URL) {
-        let entry = HistoryEntry(date: Date(), title: title, url: url)
-        navigationHistory.insert(entry, at: 0)
-        if navigationHistory.count > maxHistoryCount {
-            navigationHistory.removeLast()
-        }
-    }
+    // Opt out of the MainActor-isolated deinit synthesized under
+    // SWIFT_DEFAULT_ACTOR_ISOLATION=MainActor: the isolated executor hop
+    // double-frees task-local storage on current macOS runtimes
+    // (swiftlang/swift#88036) and aborts with a malloc error.
+    nonisolated deinit {}
 
     func newTab(url: URL?) -> UUID {
         let id = UUID()
@@ -49,6 +33,7 @@ final class TabManager: ObservableObject {
 
         tabOrder.removeAll { $0 == id }
         tabURL.removeValue(forKey: id)
+        tabTitle.removeValue(forKey: id)
 
         if wasCurrent, let idx = closedIdx {
             if idx > 0 {

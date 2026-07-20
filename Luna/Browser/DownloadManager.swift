@@ -48,12 +48,21 @@ final class DownloadManager: ObservableObject {
     }
 
     /// Open the file in its default application.
+    /// If the file was moved or deleted since downloading, drop it from the list.
     func open(_ item: DownloadItem) {
+        guard fileManager.fileExists(atPath: item.fileURL.path) else {
+            removeItem(id: item.id)
+            return
+        }
         NSWorkspace.shared.open(item.fileURL)
     }
 
     /// Reveal the file in Finder.
     func revealInFinder(_ item: DownloadItem) {
+        guard fileManager.fileExists(atPath: item.fileURL.path) else {
+            removeItem(id: item.id)
+            return
+        }
         NSWorkspace.shared.selectFile(item.fileURL.path, inFileViewerRootedAtPath: item.fileURL.deletingLastPathComponent().path)
     }
 

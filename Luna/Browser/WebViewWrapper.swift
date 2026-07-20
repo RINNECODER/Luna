@@ -14,6 +14,8 @@ import AppKit
 /// across tabs. On macOS 12+ WebKit uses a single process pool per app; no need to set one.
 /// Autofill of saved credentials works when sites use standard autocomplete attributes.
 final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WKDownloadDelegate, WKUIDelegate {
+    let profileId: UUID
+    private let websiteDataStore: WKWebsiteDataStore
     private var webViews: [UUID: WKWebView] = [:]
     private(set) var activeTab: UUID?
     @Published var currentURL: URL?
@@ -38,11 +40,11 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     private let zoomMax: CGFloat = 3.0
     private let zoomStep: CGFloat = 0.10
     
-    /// KVO observations for title changes per tab
-    private var titleObservations: [UUID: NSKeyValueObservation] = [:]
-    
-    /// KVO observations for URL changes per tab (for favicon updates)
-    private var urlObservations: [UUID: NSKeyValueObservation] = [:]
+    /// KVO observations per tab (title, URL, back/forward state).
+    private var observations: [UUID: [NSKeyValueObservation]] = [:]
+
+    /// Last find-in-page query per tab so Next/Previous work even after the selection changes.
+    private var lastFindQueryByTab: [UUID: String] = [:]
     
     /// Favicon URLs per tab (extracted from page <link rel="icon">)
     @Published var faviconURLByTab: [UUID: URL?] = [:]
@@ -55,6 +57,17 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     
     /// TabManager reference for updating titles
     weak var tabManager: TabManager?
+    var onNavigationFinished: ((UUID, URL, String) -> Void)?
+
+    init(profileId: UUID, dataStore: WKWebsiteDataStore) {
+        self.profileId = profileId
+        self.websiteDataStore = dataStore
+        super.init()
+    }
+
+    // Avoid the MainActor isolated-deinit executor hop that double-frees
+    // task-local storage on current macOS runtimes (swiftlang/swift#88036).
+    nonisolated deinit {}
 
     // MARK: - Color helpers
 
@@ -293,11 +306,13 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         // Standards-compliant config to avoid bot/fingerprint detection: persistent store, real UA, full JS, no document-start injection.
         let config = WKWebViewConfiguration()
         // Use per-profile data store so cookies/sessions are fully isolated between profiles.
-        config.websiteDataStore = ProfileManager.shared.activeDataStore
+        config.websiteDataStore = websiteDataStore
         // Enable JavaScript via per-navigation preferences (preferences.javaScriptEnabled is deprecated).
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         // Enable Web Inspector + "Inspect Element" in context menu (macOS WebKit Developer Extras).
+        #if DEBUG
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        #endif
         config.userContentController.add(themeMessageHandler, name: "lumaPageTheme")
         config.userContentController.add(googleSuspiciousErrorHandler, name: "lumaGoogleSuspiciousError")
         // Inject only at documentEnd (and didFinish fallback). No atDocumentStart — early injection is detectable as DOM tampering.
@@ -308,27 +323,44 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         let wv = WKWebView(frame: .zero, configuration: config)
         // Use Safari UA for all requests to avoid bot detection on Akamai-protected sites.
         wv.customUserAgent = WebViewWrapper.safariUserAgent
+        register(webView: wv, for: tabId)
+        return wv
+    }
+
+    /// Shared setup for both regular tabs and popup webviews: delegates, bookkeeping, KVO.
+    private func register(webView wv: WKWebView, for tabId: UUID) {
         wv.navigationDelegate = self
         wv.uiDelegate = self
+        wv.allowsBackForwardNavigationGestures = true
+        wv.allowsMagnification = true
         webViews[tabId] = wv
-        
-        // Observe title changes for this tab
-        let titleObservation = wv.observe(\.title, options: [.new]) { [weak self, tabId] webView, change in
+
+        let titleObservation = wv.observe(\.title, options: [.new]) { [weak self, tabId] webView, _ in
             guard let self = self, let title = webView.title, !title.isEmpty else { return }
             DispatchQueue.main.async {
                 self.tabManager?.updateTitle(tab: tabId, title: title)
             }
         }
-        titleObservations[tabId] = titleObservation
-        
-        // Observe URL changes to fetch favicon
-        let urlObservation = wv.observe(\.url, options: [.new]) { [weak self, tabId] webView, change in
+        let urlObservation = wv.observe(\.url, options: [.new]) { [weak self, tabId] webView, _ in
             guard let self = self, webView.url != nil else { return }
             self.fetchFavicon(for: tabId, webView: webView)
         }
-        urlObservations[tabId] = urlObservation
-        
-        return wv
+        // Live back/forward state (covers pushState/same-document navigations, not just didFinish).
+        let canGoBackObservation = wv.observe(\.canGoBack, options: [.new]) { [weak self, tabId] webView, _ in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.canGoBackByTab[tabId] = webView.canGoBack
+                self.updateBackForwardForActiveTab()
+            }
+        }
+        let canGoForwardObservation = wv.observe(\.canGoForward, options: [.new]) { [weak self, tabId] webView, _ in
+            guard let self = self else { return }
+            DispatchQueue.main.async {
+                self.canGoForwardByTab[tabId] = webView.canGoForward
+                self.updateBackForwardForActiveTab()
+            }
+        }
+        observations[tabId] = [titleObservation, urlObservation, canGoBackObservation, canGoForwardObservation]
     }
 
     // MARK: - Printing
@@ -365,6 +397,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     func tabId(for webView: WKWebView) -> UUID? {
         webViews.first(where: { $0.value === webView })?.key
+    }
+
+    func webViewIfLoaded(for tabId: UUID) -> WKWebView? {
+        webViews[tabId]
     }
 
     func canGoBack(in tabId: UUID) -> Bool {
@@ -415,40 +451,37 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     // MARK: - Find in page (Cmd+F)
 
+    /// JSON-encodes a string for safe embedding in JavaScript source (handles quotes, backslashes, newlines).
+    private static func jsStringLiteral(_ s: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [s]),
+              let json = String(data: data, encoding: .utf8) else { return "''" }
+        // ["..."] → "..."
+        return String(json.dropFirst().dropLast())
+    }
+
     func findInPage(query: String, in tabId: UUID) {
         guard let wv = webViews[tabId], !query.isEmpty else { return }
-        let escaped = query.replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
+        lastFindQueryByTab[tabId] = query
+        let literal = Self.jsStringLiteral(query)
         wv.evaluateJavaScript("""
-            if (window.__lumaFindHighlight) {
-                window.__lumaFindHighlight.clear();
-            }
-            window.__lumaFindHighlight = new (function() {
-                this.matches = [];
-                this.current = -1;
-                this.clear = function() {
-                    this.matches.forEach(function(m) { m.style.backgroundColor = ''; m.style.outline = ''; });
-                    this.matches = [];
-                    this.current = -1;
-                };
-            })();
             window.getSelection().removeAllRanges();
-            window.find('\(escaped)', false, false, true);
+            window.find(\(literal), false, false, true);
         """, completionHandler: nil)
     }
 
     func findNext(in tabId: UUID) {
-        guard let wv = webViews[tabId] else { return }
-        wv.evaluateJavaScript("window.find(window.getSelection().toString(), false, false, true);", completionHandler: nil)
+        guard let wv = webViews[tabId], let query = lastFindQueryByTab[tabId] else { return }
+        wv.evaluateJavaScript("window.find(\(Self.jsStringLiteral(query)), false, false, true);", completionHandler: nil)
     }
 
     func findPrevious(in tabId: UUID) {
-        guard let wv = webViews[tabId] else { return }
-        wv.evaluateJavaScript("window.find(window.getSelection().toString(), false, true, true);", completionHandler: nil)
+        guard let wv = webViews[tabId], let query = lastFindQueryByTab[tabId] else { return }
+        wv.evaluateJavaScript("window.find(\(Self.jsStringLiteral(query)), false, true, true);", completionHandler: nil)
     }
 
     func clearFind(in tabId: UUID) {
         guard let wv = webViews[tabId] else { return }
+        lastFindQueryByTab.removeValue(forKey: tabId)
         wv.evaluateJavaScript("window.getSelection().removeAllRanges();", completionHandler: nil)
     }
 
@@ -480,35 +513,6 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         guard let wv = webViews[tabId] else { return }
         let zoom = zoomByTab[tabId] ?? 1.0
         wv.pageZoom = Double(zoom)
-    }
-
-    func evaluateSelectedText(in tabId: UUID, completion: @escaping (String?) -> Void) {
-        guard let wv = webViews[tabId] else {
-            DispatchQueue.main.async { completion(nil) }
-            return
-        }
-        wv.evaluateJavaScript("window.getSelection().toString()") { result, error in
-            DispatchQueue.main.async {
-                if error != nil {
-                    completion(nil)
-                    return
-                }
-                if let text = result as? String, !text.isEmpty {
-                    completion(text)
-                } else {
-                    completion(nil)
-                }
-            }
-        }
-    }
-
-    /// Convenience for AI command surface: uses active tab.
-    func evaluateSelectedText(completion: @escaping (String?) -> Void) {
-        guard let tabId = activeTab else {
-            DispatchQueue.main.async { completion(nil) }
-            return
-        }
-        evaluateSelectedText(in: tabId, completion: completion)
     }
 
     /// Fetches the favicon URL from the page's <link rel="icon"> tag
@@ -640,8 +644,14 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     /// Removes a tab's WebView when the tab is closed.
     func removeWebView(for tabId: UUID) {
-        titleObservations.removeValue(forKey: tabId)
-        urlObservations.removeValue(forKey: tabId)
+        observations.removeValue(forKey: tabId)
+        lastFindQueryByTab.removeValue(forKey: tabId)
+        // Stop any in-flight load and detach delegates so callbacks can't fire during teardown.
+        if let wv = webViews[tabId] {
+            wv.stopLoading()
+            wv.navigationDelegate = nil
+            wv.uiDelegate = nil
+        }
         faviconURLByTab.removeValue(forKey: tabId)
         primaryTintByTab.removeValue(forKey: tabId)
         webViews.removeValue(forKey: tabId)
@@ -658,6 +668,12 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         } else {
             updatePageThemeForActiveTab()
             updateBackForwardForActiveTab()
+        }
+    }
+
+    func removeAllWebViews() {
+        for tabId in Array(webViews.keys) {
+            removeWebView(for: tabId)
         }
     }
 
@@ -771,6 +787,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let tabId = webViews.first(where: { $0.value === webView })?.key else { return }
+        if let url = webView.url {
+            let title = webView.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+            onNavigationFinished?(tabId, url, (title?.isEmpty == false ? title! : (url.host ?? url.absoluteString)))
+        }
         if tabId == activeTab {
             DispatchQueue.main.async { [weak self] in
                 self?.currentURL = webView.url
@@ -915,31 +935,14 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         let id = tabManager.newTab(url: requestURL)
         // IMPORTANT: the returned WKWebView must be created with the provided `configuration`,
         // otherwise WebKit throws: "Returned WKWebView was not created with the given configuration."
-        // Use active profile data store so popups/OAuth stay within the same profile.
-        configuration.websiteDataStore = ProfileManager.shared.activeDataStore
+        // The supplied popup configuration inherits the opener's profile store.
+        #if DEBUG
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        #endif
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
         let wv = WKWebView(frame: .zero, configuration: configuration)
         wv.customUserAgent = Self.userAgent(for: requestURL)
-        wv.navigationDelegate = self
-        wv.uiDelegate = self
-        webViews[id] = wv
-
-        // Observe title changes for this tab
-        let titleObservation = wv.observe(\.title, options: [.new]) { [weak self, id] webView, _ in
-            guard let self = self, let title = webView.title, !title.isEmpty else { return }
-            DispatchQueue.main.async {
-                self.tabManager?.updateTitle(tab: id, title: title)
-            }
-        }
-        titleObservations[id] = titleObservation
-
-        // Observe URL changes to fetch favicon
-        let urlObservation = wv.observe(\.url, options: [.new]) { [weak self, id] webView, _ in
-            guard let self = self, webView.url != nil else { return }
-            self.fetchFavicon(for: id, webView: webView)
-        }
-        urlObservations[id] = urlObservation
+        register(webView: wv, for: id)
 
         setActiveTab(id)
         // Do NOT call `load()` here — WebKit will load `navigationAction.request` into the returned webview.
@@ -967,7 +970,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         alert.messageText = message
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
-        alert.beginSheetModal(for: webView.window ?? NSApp.keyWindow ?? NSApp.mainWindow!) { _ in
+        if let window = webView.window ?? NSApp.keyWindow ?? NSApp.mainWindow {
+            alert.beginSheetModal(for: window) { _ in completionHandler() }
+        } else {
+            alert.runModal()
             completionHandler()
         }
     }
@@ -978,8 +984,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         alert.alertStyle = .informational
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: webView.window ?? NSApp.keyWindow ?? NSApp.mainWindow!) { response in
-            completionHandler(response == .alertFirstButtonReturn)
+        if let window = webView.window ?? NSApp.keyWindow ?? NSApp.mainWindow {
+            alert.beginSheetModal(for: window) { response in completionHandler(response == .alertFirstButtonReturn) }
+        } else {
+            completionHandler(alert.runModal() == .alertFirstButtonReturn)
         }
     }
 
@@ -994,8 +1002,12 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         textField.stringValue = defaultText ?? ""
         alert.accessoryView = textField
 
-        alert.beginSheetModal(for: webView.window ?? NSApp.keyWindow ?? NSApp.mainWindow!) { response in
-            completionHandler(response == .alertFirstButtonReturn ? textField.stringValue : nil)
+        if let window = webView.window ?? NSApp.keyWindow ?? NSApp.mainWindow {
+            alert.beginSheetModal(for: window) { response in
+                completionHandler(response == .alertFirstButtonReturn ? textField.stringValue : nil)
+            }
+        } else {
+            completionHandler(alert.runModal() == .alertFirstButtonReturn ? textField.stringValue : nil)
         }
     }
 

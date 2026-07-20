@@ -3,8 +3,6 @@ import Foundation
 
 final class OllamaClient {
 
-    static var lastNetworkError: String?
-
     // MARK: - Streaming generate
 
     @discardableResult
@@ -34,7 +32,7 @@ final class OllamaClient {
             let body = buildChatBody(model: model, prompt: prompt, context: context,
                                      recentMessages: recentMessages, conversationSummary: conversationSummary, stream: true)
             guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
-                await MainActor.run { onCompletion(.failure(OllamaError.invalidURL)) }
+                await MainActor.run { onCompletion(.failure(OllamaError.serverError("Failed to encode request"))) }
                 return
             }
 
@@ -46,39 +44,56 @@ final class OllamaClient {
             do {
                 let (asyncBytes, response) = try await URLSession.shared.bytes(for: request)
                 if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                    let msg = "Ollama HTTP \(http.statusCode)"
-                    Self.lastNetworkError = msg
-                    await MainActor.run { onCompletion(.failure(OllamaError.serverError(msg))) }
+                    await MainActor.run { onCompletion(.failure(OllamaError.serverError("Ollama HTTP \(http.statusCode)"))) }
                     return
                 }
 
-                var lineBuffer = ""
-                for try await byte in asyncBytes {
+                var streamError: String?
+                for try await line in asyncBytes.lines {
                     if Task.isCancelled { break }
-                    let char = Character(UnicodeScalar(byte))
-                    if char == "\n" {
-                        let line = lineBuffer
-                        lineBuffer = ""
-                        if let token = Self.extractStreamToken(from: line) {
-                            let t = token
-                            await MainActor.run { onToken(t) }
-                        }
-                    } else {
-                        lineBuffer.append(char)
+                    if let token = Self.extractStreamToken(from: line) {
+                        await MainActor.run { onToken(token) }
+                    } else if let error = Self.extractStreamError(from: line) {
+                        streamError = error
+                        break
                     }
                 }
-                Self.lastNetworkError = nil
+                if let streamError {
+                    await MainActor.run { onCompletion(.failure(OllamaError.serverError(streamError))) }
+                    return
+                }
                 await MainActor.run { onCompletion(.success(())) }
             } catch is CancellationError {
                 await MainActor.run { onCompletion(.success(())) }
             } catch {
-                Self.lastNetworkError = error.localizedDescription
                 await MainActor.run { onCompletion(.failure(OllamaError.network(error.localizedDescription))) }
             }
         }
     }
 
     // MARK: - Non-streaming generate
+
+    func summarizeConversation(
+        baseURLString: String,
+        model: String,
+        messages: [ChatMessage],
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        let transcript = messages.map { "\($0.role == .user ? "User" : "Assistant"): \($0.text)" }.joined(separator: "\n")
+        let prompt = "Summarize this conversation in 2-3 sentences:\n\(transcript)\n\nReply with ONLY the summary."
+        generate(baseURLString: baseURLString, model: model, prompt: prompt, context: nil) { result in
+            switch result {
+            case .success(let data):
+                if let response = try? JSONDecoder().decode(LLMResponse.self, from: data) {
+                    completion(.success(response.text))
+                } else {
+                    completion(.failure(OllamaError.serverError("Failed to parse summary")))
+                }
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
 
     func generate(
         baseURLString: String,
@@ -104,7 +119,7 @@ final class OllamaClient {
         let body = buildChatBody(model: model, prompt: prompt, context: context,
                                  recentMessages: recentMessages, conversationSummary: conversationSummary, stream: false)
         guard let bodyData = try? JSONSerialization.data(withJSONObject: body) else {
-            DispatchQueue.main.async { completion(.failure(OllamaError.invalidURL)) }
+            DispatchQueue.main.async { completion(.failure(OllamaError.serverError("Failed to encode request"))) }
             return
         }
 
@@ -116,7 +131,6 @@ final class OllamaClient {
 
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
-                Self.lastNetworkError = error.localizedDescription
                 DispatchQueue.main.async { completion(.failure(OllamaError.network(error.localizedDescription))) }
                 return
             }
@@ -125,12 +139,9 @@ final class OllamaClient {
                 return
             }
             if let parsed = Self.parseChatResponse(data: data) {
-                Self.lastNetworkError = nil
                 DispatchQueue.main.async { completion(.success(parsed)) }
             } else {
-                let msg = "Failed to parse Ollama response"
-                Self.lastNetworkError = msg
-                DispatchQueue.main.async { completion(.failure(OllamaError.serverError(msg))) }
+                DispatchQueue.main.async { completion(.failure(OllamaError.serverError("Failed to parse Ollama response"))) }
             }
         }.resume()
     }
@@ -167,7 +178,7 @@ final class OllamaClient {
                                 recentMessages: [ChatMessage], conversationSummary: String?,
                                 stream: Bool) -> [String: Any] {
         var messages: [[String: Any]] = []
-        messages.append(["role": "system", "content": "You are Luna, an intelligent browser assistant. Be concise and accurate. Use Markdown when it improves clarity."])
+        messages.append(["role": "system", "content": "You are Luna, an intelligent browser assistant. Be concise and accurate. Use Markdown when it improves clarity. \(LLMClock.contextLine())"])
         if let summary = conversationSummary {
             messages.append(["role": "user", "content": "Previous conversation summary: \(summary)"])
             messages.append(["role": "assistant", "content": "Understood."])
@@ -194,6 +205,16 @@ final class OllamaClient {
               let content = message["content"] as? String,
               !content.isEmpty else { return nil }
         return content
+    }
+
+    /// Ollama reports errors mid-stream as `{"error": "..."}` lines; surface them
+    /// instead of silently finishing with an empty reply.
+    private static func extractStreamError(from jsonString: String) -> String? {
+        guard !jsonString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let error = json["error"] as? String, !error.isEmpty else { return nil }
+        return error
     }
 
     private static func parseChatResponse(data: Data) -> Data? {

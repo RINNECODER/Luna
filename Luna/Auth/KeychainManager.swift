@@ -88,12 +88,14 @@ final class KeychainManager {
 }
 
 /// Errors that can occur during Keychain operations.
-enum KeychainError: Error {
+/// Conforms to LocalizedError so `error.localizedDescription` surfaces these
+/// messages instead of a generic "The operation couldn't be completed".
+enum KeychainError: LocalizedError {
     case invalidData
     case storeFailed(OSStatus)
     case deleteFailed(OSStatus)
-    
-    var localizedDescription: String {
+
+    var errorDescription: String? {
         switch self {
         case .invalidData:
             return "Invalid key data"

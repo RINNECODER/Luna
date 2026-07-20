@@ -5,36 +5,53 @@ import Combine
 /// Manages persistent storage of browsing history and chat conversations.
 /// Stores data on disk in Application Support directory.
 final class HistoryManager: ObservableObject {
-    static let shared = HistoryManager()
-    
     @Published private(set) var historyEvents: [HistoryEvent] = []
     @Published private(set) var conversationSummaries: [UUID: [ConversationSummary]] = [:] // tabId -> summaries
     
     private let fileManager = FileManager.default
+    private let profileId: UUID
     private let historyFileName = "browsing_history.json"
     private let summariesFileName = "conversation_summaries.json"
+    private let maxHistoryCount = 10_000
+    private var pendingHistorySave: DispatchWorkItem?
+    private var pendingSummariesSave: DispatchWorkItem?
+    /// Serial queue for disk writes so JSON encoding of large histories never blocks the main thread.
+    private let saveQueue = DispatchQueue(label: "com.luna.history-save", qos: .utility)
     
     private var historyFileURL: URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let lumaDir = appSupport.appendingPathComponent("Luma", isDirectory: true)
+        let lumaDir = appSupport.appendingPathComponent("Luna/Profiles/\(profileId.uuidString)", isDirectory: true)
         try? fileManager.createDirectory(at: lumaDir, withIntermediateDirectories: true)
         return lumaDir.appendingPathComponent(historyFileName)
     }
     
     private var summariesFileURL: URL {
         let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let lumaDir = appSupport.appendingPathComponent("Luma", isDirectory: true)
+        let lumaDir = appSupport.appendingPathComponent("Luna/Profiles/\(profileId.uuidString)", isDirectory: true)
+        try? fileManager.createDirectory(at: lumaDir, withIntermediateDirectories: true)
         return lumaDir.appendingPathComponent(summariesFileName)
     }
     
-    private init() {
+    init(profileId: UUID) {
+        self.profileId = profileId
         loadHistory()
         loadSummaries()
     }
+
+    // Avoid the MainActor isolated-deinit executor hop that double-frees
+    // task-local storage on current macOS runtimes (swiftlang/swift#88036).
+    nonisolated deinit {}
     
     // MARK: - Page Visit Tracking
     
     func recordPageVisit(url: URL, title: String) {
+        guard url.scheme == "http" || url.scheme == "https" || url.scheme == "file" else { return }
+        if let latest = historyEvents.first,
+           latest.type == .pageVisit,
+           latest.url == url.absoluteString,
+           Date().timeIntervalSince(latest.timestamp) < 2 {
+            return
+        }
         let event = HistoryEvent(
             timestamp: Date(),
             type: .pageVisit,
@@ -42,7 +59,10 @@ final class HistoryManager: ObservableObject {
             pageTitle: title
         )
         historyEvents.insert(event, at: 0)
-        saveHistory()
+        if historyEvents.count > maxHistoryCount {
+            historyEvents.removeLast(historyEvents.count - maxHistoryCount)
+        }
+        scheduleHistorySave()
     }
     
     // MARK: - Chat History Management
@@ -57,7 +77,10 @@ final class HistoryManager: ObservableObject {
             conversationSummary: summary
         )
         historyEvents.insert(event, at: 0)
-        saveHistory()
+        if historyEvents.count > maxHistoryCount {
+            historyEvents.removeLast(historyEvents.count - maxHistoryCount)
+        }
+        scheduleHistorySave()
     }
     
     func addConversationSummary(tabId: UUID, summary: ConversationSummary) {
@@ -65,7 +88,7 @@ final class HistoryManager: ObservableObject {
             conversationSummaries[tabId] = []
         }
         conversationSummaries[tabId]?.append(summary)
-        saveSummaries()
+        scheduleSummariesSave()
     }
     
     func getSummariesForTab(tabId: UUID) -> [ConversationSummary] {
@@ -96,36 +119,68 @@ final class HistoryManager: ObservableObject {
         case .allTime:
             historyEvents.removeAll()
             conversationSummaries.removeAll()
-            saveHistory()
-            saveSummaries()
+            scheduleHistorySave()
+            scheduleSummariesSave()
             return
         }
         
         historyEvents.removeAll { $0.timestamp >= cutoffDate }
-        saveHistory()
+        conversationSummaries = conversationSummaries.mapValues { summaries in
+            summaries.filter { $0.timestamp < cutoffDate }
+        }.filter { !$0.value.isEmpty }
+        scheduleHistorySave()
+        scheduleSummariesSave()
     }
     
     func clearIndividualEvent(_ eventId: UUID) {
         historyEvents.removeAll { $0.id == eventId }
-        saveHistory()
+        scheduleHistorySave()
     }
     
     func clearChatHistoryForTab(_ tabId: UUID) {
         conversationSummaries.removeValue(forKey: tabId)
-        saveSummaries()
+        scheduleSummariesSave()
     }
     
     // MARK: - Persistence
     
+    func flush() {
+        pendingHistorySave?.cancel()
+        pendingSummariesSave?.cancel()
+        pendingHistorySave = nil
+        pendingSummariesSave = nil
+        saveHistory()
+        saveSummaries()
+        // Drain the save queue so data is guaranteed on disk (e.g. before app quit).
+        saveQueue.sync {}
+    }
+
+    private func scheduleHistorySave() {
+        pendingHistorySave?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveHistory() }
+        pendingHistorySave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func scheduleSummariesSave() {
+        pendingSummariesSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.saveSummaries() }
+        pendingSummariesSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
     private func saveHistory() {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        
-        do {
-            let data = try encoder.encode(historyEvents)
-            try data.write(to: historyFileURL)
-        } catch {
-            print("Failed to save history: \(error)")
+        let snapshot = historyEvents
+        let url = historyFileURL
+        saveQueue.async {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            do {
+                let data = try encoder.encode(snapshot)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                print("Failed to save history: \(error)")
+            }
         }
     }
     
@@ -143,14 +198,17 @@ final class HistoryManager: ObservableObject {
     }
     
     private func saveSummaries() {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        
-        do {
-            let data = try encoder.encode(conversationSummaries)
-            try data.write(to: summariesFileURL)
-        } catch {
-            print("Failed to save summaries: \(error)")
+        let snapshot = conversationSummaries
+        let url = summariesFileURL
+        saveQueue.async {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            do {
+                let data = try encoder.encode(snapshot)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                print("Failed to save summaries: \(error)")
+            }
         }
     }
     

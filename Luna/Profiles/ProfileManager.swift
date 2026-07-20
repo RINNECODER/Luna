@@ -1,6 +1,6 @@
 // Luna — Profile Manager
 // Manages browser profiles: isolated history, cookies, and identity.
-// Each profile gets its own WKWebsiteDataStore (non-persistent UUID-keyed store).
+// Each profile gets its own persistent WKWebsiteDataStore.
 // The Default profile uses the system persistent store for backwards compatibility.
 import Foundation
 import SwiftUI
@@ -50,8 +50,6 @@ struct BrowserProfile: Identifiable, Codable, Equatable {
     /// true = uses WKWebsiteDataStore.default() (legacy / Default profile)
     var isDefault: Bool
 
-    static func == (lhs: BrowserProfile, rhs: BrowserProfile) -> Bool { lhs.id == rhs.id }
-
     var profileColor: ProfileColor {
         ProfileColor.presets.first { $0.id == colorId } ?? ProfileColor.presets[0]
     }
@@ -81,15 +79,10 @@ final class ProfileManager: ObservableObject {
     static let shared = ProfileManager()
 
     @Published private(set) var profiles: [BrowserProfile] = []
-    @Published private(set) var activeProfileId: UUID = UUID()   // overwritten immediately in init
+    @Published private(set) var lastActiveProfileId: UUID = UUID()
 
     // Data store cache: profile UUID → WKWebsiteDataStore
     private var dataStores: [UUID: WKWebsiteDataStore] = [:]
-
-    // In-memory suspended tab snapshots (profile → snapshot)
-    private var suspendedSnapshots: [UUID: ProfileTabSnapshot] = [:]
-    // Timers for 5-min suspension
-    private var suspensionTimers: [UUID: DispatchWorkItem] = [:]
 
     private let profilesKey = "luma_profiles_v1"
     private let activeProfileKey = "luma_active_profile_v1"
@@ -104,22 +97,28 @@ final class ProfileManager: ObservableObject {
                 isDefault: true
             )
             profiles = [def]
-            activeProfileId = def.id
+            lastActiveProfileId = def.id
             saveProfiles()
         } else {
             profiles = saved
             if let storedActive = UserDefaults.standard.string(forKey: "luma_active_profile_v1"),
                let uuid = UUID(uuidString: storedActive),
                saved.contains(where: { $0.id == uuid }) {
-                activeProfileId = uuid
+                lastActiveProfileId = uuid
             } else {
-                activeProfileId = saved[0].id
+                lastActiveProfileId = saved[0].id
             }
         }
     }
 
-    var activeProfile: BrowserProfile {
-        profiles.first { $0.id == activeProfileId } ?? profiles[0]
+    func profile(for profileId: UUID) -> BrowserProfile {
+        profiles.first { $0.id == profileId }
+            ?? profiles.first
+            ?? BrowserProfile(id: profileId, name: "Personal", colorId: "indigo", isDefault: true)
+    }
+
+    func validProfileId(_ profileId: UUID) -> UUID {
+        profiles.contains(where: { $0.id == profileId }) ? profileId : (profiles.first?.id ?? profileId)
     }
 
     // MARK: - Data store
@@ -143,16 +142,10 @@ final class ProfileManager: ObservableObject {
         return store
     }
 
-    var activeDataStore: WKWebsiteDataStore {
-        dataStore(for: activeProfileId)
-    }
-
-    // MARK: - Switch profile
-
-    /// Switch to a profile. Caller is responsible for suspending/restoring tab state.
-    func switchTo(profileId: UUID) {
+    /// Remembers the last profile used for the next newly-created window.
+    func markLastActive(profileId: UUID) {
         guard profiles.contains(where: { $0.id == profileId }) else { return }
-        activeProfileId = profileId
+        lastActiveProfileId = profileId
         UserDefaults.standard.set(profileId.uuidString, forKey: activeProfileKey)
     }
 
@@ -177,49 +170,41 @@ final class ProfileManager: ObservableObject {
         saveProfiles()
     }
 
-    /// Deletes a profile and wipes all its website data.
+    /// Deletes a profile and wipes all its website data and on-disk history/chats.
     func deleteProfile(profileId: UUID, completion: @escaping () -> Void) {
-        guard profiles.count > 1 else { return }  // always keep at least one
+        // Always keep at least one profile. Still invoke completion so callers can dismiss UI.
+        guard profiles.count > 1, profiles.contains(where: { $0.id == profileId }) else {
+            DispatchQueue.main.async { completion() }
+            return
+        }
         let store = dataStore(for: profileId)
         let types = WKWebsiteDataStore.allWebsiteDataTypes()
         store.removeData(ofTypes: types, modifiedSince: .distantPast) { [weak self] in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                // Re-check: an overlapping delete may have already removed this or other profiles.
+                guard self.profiles.count > 1, self.profiles.contains(where: { $0.id == profileId }) else {
+                    completion()
+                    return
+                }
                 self.profiles.removeAll { $0.id == profileId }
                 self.dataStores.removeValue(forKey: profileId)
-                self.suspendedSnapshots.removeValue(forKey: profileId)
-                if self.activeProfileId == profileId {
-                    self.activeProfileId = self.profiles[0].id
+                if self.lastActiveProfileId == profileId, let first = self.profiles.first {
+                    self.lastActiveProfileId = first.id
                 }
                 self.saveProfiles()
+                Self.removeProfileDataDirectory(profileId: profileId)
                 completion()
             }
         }
     }
 
-    // MARK: - Tab suspension
-
-    func saveSnapshot(_ snapshot: ProfileTabSnapshot, for profileId: UUID) {
-        suspendedSnapshots[profileId] = snapshot
-    }
-
-    func snapshot(for profileId: UUID) -> ProfileTabSnapshot? {
-        suspendedSnapshots[profileId]
-    }
-
-    /// Schedule suspension of a profile's webviews after 5 minutes.
-    /// Call this when switching away from a profile.
-    func scheduleSuspension(for profileId: UUID, action: @escaping () -> Void) {
-        // Cancel any existing timer
-        suspensionTimers[profileId]?.cancel()
-        let work = DispatchWorkItem(block: action)
-        suspensionTimers[profileId] = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 300, execute: work)
-    }
-
-    func cancelSuspension(for profileId: UUID) {
-        suspensionTimers[profileId]?.cancel()
-        suspensionTimers.removeValue(forKey: profileId)
+    /// Removes the profile's Application Support directory (history, chats, summaries)
+    /// so "delete profile" actually deletes everything, not just website data.
+    private static func removeProfileDataDirectory(profileId: UUID) {
+        guard let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let dir = appSupport.appendingPathComponent("Luna/Profiles/\(profileId.uuidString)", isDirectory: true)
+        try? FileManager.default.removeItem(at: dir)
     }
 
     // MARK: - Persistence
@@ -228,7 +213,7 @@ final class ProfileManager: ObservableObject {
         if let data = try? JSONEncoder().encode(profiles) {
             UserDefaults.standard.set(data, forKey: profilesKey)
         }
-        UserDefaults.standard.set(activeProfileId.uuidString, forKey: activeProfileKey)
+        UserDefaults.standard.set(lastActiveProfileId.uuidString, forKey: activeProfileKey)
     }
 
     private static func loadProfiles() -> [BrowserProfile] {

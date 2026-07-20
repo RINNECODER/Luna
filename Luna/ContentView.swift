@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  Luma
+//  Luna
 //
 //  Root view that hosts the main browser shell.
 //
@@ -12,11 +12,11 @@ struct ContentView: View {
 
     var body: some View {
         BrowserShellView()
-            .onAppear { applyLumaAppearance(appearance) }
-            .onChange(of: appearance) { _, new in applyLumaAppearance(new) }
+            .onAppear { applyLunaAppearance(appearance) }
+            .onChange(of: appearance) { _, new in applyLunaAppearance(new) }
     }
 
-    private func applyLumaAppearance(_ value: String) {
+    private func applyLunaAppearance(_ value: String) {
         switch value {
         case "light":
             NSApp.appearance = NSAppearance(named: .aqua)
@@ -31,4 +31,3 @@ struct ContentView: View {
 #Preview {
     BrowserShellView()
 }
-

@@ -160,7 +160,11 @@ struct RichMessageView: View {
             text.replaceSubrange(start.lowerBound...end.lowerBound, with: " ")
         }
 
-        if text.contains("$") { return true }
+        let dollarPattern = #"(?s)(?<!\\)\$\$.*?(?<!\\)\$\$|(?<!\\)\$(?!\$).+?(?<!\\)\$"#
+        if let regex = try? NSRegularExpression(pattern: dollarPattern),
+           regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil {
+            return true
+        }
         if text.contains("\\(") && text.contains("\\)") { return true }
         if text.contains("\\[") && text.contains("\\]") { return true }
         if text.contains("\\begin{equation") { return true }

@@ -1,15 +1,21 @@
 // Luma MVP - History Page (luma://history)
+import Combine
 import SwiftUI
 
 /// Displays browsing (URL) history only. Chat sessions are not shown.
 /// Accessible via luma://history special URL.
 struct HistoryPageView: View {
-    @ObservedObject var historyManager = HistoryManager.shared
+    @ObservedObject var historyManager: HistoryManager
     var onSelectURL: (URL) -> Void
 
     @State private var searchQuery: String = ""
     @State private var showClearConfirmation: Bool = false
     @State private var clearTimeframe: HistoryManager.ClearTimeframe = .allTime
+
+    /// Cached results so hover/render passes don't rescan and re-sort the whole
+    /// history; recomputed only when the query or the underlying data changes.
+    @State private var filteredEvents: [HistoryEvent] = []
+    @State private var groupedByDate: [(date: Date, label: String, events: [HistoryEvent])] = []
 
     private let bgColor = Color(white: 0.11)
     private let textPrimary = Color(white: 0.9)
@@ -28,22 +34,23 @@ struct HistoryPageView: View {
         return f
     }()
 
-    /// URL history only (page visits), optionally filtered by search.
-    private var filteredEvents: [HistoryEvent] {
-        let all = historyManager.getHistory(for: .allTime).filter { $0.type == .pageVisit }
-        if searchQuery.isEmpty { return all }
-        return historyManager.searchHistory(query: searchQuery).filter { $0.type == .pageVisit }
-    }
+    /// Recomputes URL history (page visits), optionally filtered by search, and its date grouping.
+    private func recomputeResults() {
+        let all: [HistoryEvent]
+        if searchQuery.isEmpty {
+            all = historyManager.getHistory(for: .allTime).filter { $0.type == .pageVisit }
+        } else {
+            all = historyManager.searchHistory(query: searchQuery).filter { $0.type == .pageVisit }
+        }
+        filteredEvents = all
 
-    private var groupedByDate: [(date: Date, label: String, events: [HistoryEvent])] {
         let calendar = Calendar.current
         var grouped: [Date: [HistoryEvent]] = [:]
-        for event in filteredEvents {
+        for event in all {
             let dateKey = calendar.startOfDay(for: event.timestamp)
-            if grouped[dateKey] == nil { grouped[dateKey] = [] }
-            grouped[dateKey]?.append(event)
+            grouped[dateKey, default: []].append(event)
         }
-        return grouped.keys.sorted(by: >).compactMap { date in
+        groupedByDate = grouped.keys.sorted(by: >).map { date in
             let events = (grouped[date] ?? []).sorted(by: { $0.timestamp > $1.timestamp })
             return (date: date, label: dateSectionLabel(date), events: events)
         }
@@ -92,7 +99,7 @@ struct HistoryPageView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(groupedByDate.enumerated()), id: \.offset) { _, group in
+                        ForEach(groupedByDate, id: \.date) { group in
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(group.label)
                                     .font(.system(size: 18, weight: .semibold))
@@ -112,6 +119,12 @@ struct HistoryPageView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(bgColor)
+        .onAppear { recomputeResults() }
+        .onChange(of: searchQuery) { _, _ in recomputeResults() }
+        // Receive on main so the recompute runs after the manager's change is applied.
+        .onReceive(historyManager.objectWillChange.receive(on: DispatchQueue.main)) { _ in
+            recomputeResults()
+        }
         .alert("Clear History", isPresented: $showClearConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Clear", role: .destructive) {

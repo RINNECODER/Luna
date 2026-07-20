@@ -1,6 +1,6 @@
 name: Luna
 options:
-  bundleIdPrefix: com.luma
+  bundleIdPrefix: com.luna
   deploymentTarget:
     macOS: "15.0"
   xcodeVersion: "26.2"
@@ -19,11 +19,13 @@ configFiles:
   Release: Signing.xcconfig
 
 targets:
-  Luma:
+  Luna:
     type: application
     platform: macOS
     sources:
       - path: Luna
+        excludes:
+          - Resources/README_NOT_RESOURCES.md
     settings:
       base:
         PRODUCT_NAME: Luna
@@ -42,7 +44,6 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Luna
         INFOPLIST_KEY_CFBundleName: Luna
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        INFOPLIST_KEY_NSBluetoothWhileInUseUsageDescription: "Luna needs Bluetooth access for compatible devices."
         INFOPLIST_KEY_NSCameraUsageDescription: "Luna needs camera access for websites that request it."
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Luna needs microphone access for websites that request it."
         INFOPLIST_KEY_NSDownloadsFolderUsageDescription: "Luna needs access to Downloads to save files."
@@ -51,13 +52,13 @@ targets:
         ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES # TODO: Enable this when we have a way to handle outgoing network connections
         ENABLE_PREVIEWS: YES
         ENABLE_RESOURCE_ACCESS_AUDIO_INPUT: YES # TODO: Enable this when we have a way to handle audio input
-        ENABLE_RESOURCE_ACCESS_BLUETOOTH: YES # TODO: Enable this when we have a way to handle bluetooth
+        ENABLE_RESOURCE_ACCESS_BLUETOOTH: NO
         ENABLE_RESOURCE_ACCESS_CALENDARS: NO # TODO: Enable this when we have a way to handle calendars
         ENABLE_RESOURCE_ACCESS_CAMERA: YES # TODO: Enable this when we have a way to handle camera
         ENABLE_RESOURCE_ACCESS_CONTACTS: NO # TODO: Enable this when we have a way to handle contacts
         ENABLE_RESOURCE_ACCESS_LOCATION: NO # TODO: Enable this when we have a way to handle location
-        ENABLE_RESOURCE_ACCESS_PRINTING: NO # TODO: Enable this when we have a way to handle printing
-        ENABLE_RESOURCE_ACCESS_USB: YES # TODO: Enable this when we have a way to handle usb
+        ENABLE_RESOURCE_ACCESS_PRINTING: YES
+        ENABLE_RESOURCE_ACCESS_USB: NO
         ENABLE_USER_SELECTED_FILES: readonly # TODO: Enable this when we have a way to handle user selected files
         PROVISIONING_PROFILE_SPECIFIER: ""
         CODE_SIGN_IDENTITY: "Apple Development"
@@ -81,3 +82,16 @@ targets:
     configFiles:
       Debug: Signing.xcconfig
       Release: Signing.xcconfig
+
+  LunaTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: LunaTests
+    dependencies:
+      - target: Luna
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO

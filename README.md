@@ -80,7 +80,7 @@ Luna also supports **Google Gemini** (cloud) and any other model available throu
 3. **Open and build:**
 
    ```bash
-   open Luma.xcodeproj
+   open Luna.xcodeproj
    ```
 
    Then **Product > Run** (`Cmd+R`) in Xcode.

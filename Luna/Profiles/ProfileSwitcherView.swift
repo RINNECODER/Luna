@@ -7,6 +7,7 @@ import AppKit
 
 struct ProfileSwitcherView: View {
     @ObservedObject var profileManager: ProfileManager
+    let activeProfileId: UUID
     /// Called when the user picks a different profile; caller handles tab swap.
     let onSwitch: (BrowserProfile) -> Void
     /// Called when user picks "Open in New Window" for a profile.
@@ -20,7 +21,7 @@ struct ProfileSwitcherView: View {
     @State private var profileToDelete: BrowserProfile? = nil
     @State private var showDeleteConfirm: Bool = false
 
-    private var active: BrowserProfile { profileManager.activeProfile }
+    private var active: BrowserProfile { profileManager.profile(for: activeProfileId) }
 
     var body: some View {
         ZStack {
@@ -102,9 +103,9 @@ struct ProfileSwitcherView: View {
                     ForEach(profileManager.profiles) { profile in
                         ProfileRowView(
                             profile: profile,
-                            isActive: profile.id == profileManager.activeProfileId,
+                            isActive: profile.id == activeProfileId,
                             onSelect: {
-                                if profile.id != profileManager.activeProfileId {
+                                if profile.id != activeProfileId {
                                     dropdownOpen = false
                                     onSwitch(profile)
                                 } else {
@@ -213,10 +214,10 @@ struct ProfileSwitcherView: View {
 
     private func cycleProfile(direction: Int) {
         let ids = profileManager.profiles.map(\.id)
-        guard let current = ids.firstIndex(of: profileManager.activeProfileId) else { return }
+        guard let current = ids.firstIndex(of: activeProfileId) else { return }
         let next = (current + direction + ids.count) % ids.count
         let nextProfile = profileManager.profiles[next]
-        if nextProfile.id != profileManager.activeProfileId {
+        if nextProfile.id != activeProfileId {
             onSwitch(nextProfile)
         }
     }
@@ -233,10 +234,10 @@ struct ProfileSwitcherView: View {
     }
 
     private func deleteProfile(_ profile: BrowserProfile) {
-        let wasActive = profile.id == profileManager.activeProfileId
+        let wasActive = profile.id == activeProfileId
         profileManager.deleteProfile(profileId: profile.id) {
             if wasActive {
-                onSwitch(profileManager.activeProfile)
+                onSwitch(profileManager.profile(for: profileManager.lastActiveProfileId))
             }
         }
         showDeleteConfirm = false

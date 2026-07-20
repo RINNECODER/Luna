@@ -21,20 +21,21 @@ private final class AddressBarKeyState: ObservableObject {
 struct BrowserShellView: View {
     // MARK: - Profile state
     @ObservedObject private var profileManager = ProfileManager.shared
-    /// Per-profile snapshots: tab managers + web wrappers kept alive for 5 min after switching away.
-    @State private var profileTabManagers: [UUID: TabManager] = [:]
-    @State private var profileWebWrappers: [UUID: WebViewWrapper] = [:]
+    @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
+    @StateObject private var sessionStore: BrowserSessionStore
 
-    // MARK: - Active browser state (swapped on profile switch)
-    @StateObject private var tabManager = TabManager()
-    @StateObject private var web: WebViewWrapper = {
-        let wrapper = WebViewWrapper()
-        return wrapper
-    }()
+    private var session: ProfileSession { sessionStore.activeSession }
+    private var tabManager: TabManager { session.tabManager }
+    private var web: WebViewWrapper { session.webViewWrapper }
+    private var historyManager: HistoryManager { session.historyManager }
+    private var activeProfile: BrowserProfile { profileManager.profile(for: sessionStore.activeProfileId) }
+
+    init(initialProfileId: UUID? = nil) {
+        _sessionStore = StateObject(wrappedValue: BrowserSessionStore(initialProfileId: initialProfileId))
+    }
+
     @State private var addressBarText: String = ""
     @State private var tabsWithPanelOpen: Set<UUID> = []
-    @State private var tabChatHistory: [UUID: [ChatMessage]] = [:]
-    @State private var tabAIChatMessages: [UUID: [ChatMessage]] = [:]
     @State private var aiPanelWidth: CGFloat = 380
     @State private var shouldResetPanelWidth: Bool = false
     @State private var isDraggingDivider: Bool = false
@@ -57,6 +58,7 @@ struct BrowserShellView: View {
     @ObservedObject private var downloadManager = DownloadManager.shared
     @State private var downloadIconScale: CGFloat = 1
     @State private var isFullScreen: Bool = false
+    @State private var hostWindow: NSWindow?
 
     private let router = CommandRouter()
     private let gemini = GeminiClient(apiKeyProvider: { KeychainManager.shared.fetchGeminiKey() })
@@ -69,10 +71,10 @@ struct BrowserShellView: View {
     private let chromePadding: CGFloat = 4
 
     /// Profile color tint overlaid on the toolbar background (tab strip + address bar).
-    private var profileToolbarTint: Color { profileManager.activeProfile.profileColor.color.opacity(0.18) }
+    private var profileToolbarTint: Color { activeProfile.profileColor.color.opacity(0.18) }
 
     /// Inactive tab background inherits a 10-15% lighter profile color variant.
-    private var profileInactiveTabColor: Color { profileManager.activeProfile.profileColor.lightVariant.opacity(0.25) }
+    private var profileInactiveTabColor: Color { activeProfile.profileColor.lightVariant.opacity(0.25) }
 
     /// DIA-style: unified chrome color (tabs + address bar + content). Start page = dark; web page = page theme or default.
     private var chromeColor: Color {
@@ -105,7 +107,7 @@ struct BrowserShellView: View {
             // Configures the window titlebar to be tall enough to hold tabs.
             // This is the key: it sets window.titlebarHeight so the traffic-light
             // row is as tall as our tab strip (or default height when tabs hidden).
-            TitlebarConfigurator(tabStripHeight: shouldShowTabStrip ? tabStripHeight : 0, isFullScreen: $isFullScreen)
+            TitlebarConfigurator(tabStripHeight: shouldShowTabStrip ? tabStripHeight : 0, isFullScreen: $isFullScreen, hostWindow: $hostWindow)
 
             GeometryReader { geometry in
                 HStack(spacing: 0) {
@@ -138,7 +140,7 @@ struct BrowserShellView: View {
                                 profileToolbarTint
                             }
                         )
-                        .animation(.easeInOut(duration: 0.25), value: profileManager.activeProfileId)
+                        .animation(.easeInOut(duration: 0.25), value: sessionStore.activeProfileId)
                         .transition(.move(edge: .top).combined(with: .opacity))
                         .animation(.easeInOut(duration: 0.2), value: isFullScreen)
                     }
@@ -152,44 +154,33 @@ struct BrowserShellView: View {
                             // Profile switcher bubble (left of nav buttons)
                             ProfileSwitcherView(
                                 profileManager: profileManager,
+                                activeProfileId: sessionStore.activeProfileId,
                                 onSwitch: { profile in switchToProfile(profile) },
                                 onOpenInNewWindow: { profile in openProfileInNewWindow(profile) }
                             )
                             .padding(.leading, 4)
 
-                            // Nav buttons (greyed out when nothing to go back/forward to)
+                            // Nav buttons (Safari-style: quiet, circular hover highlight)
                             HStack(spacing: 2) {
-                                Button(action: { if let id = tabManager.currentTab { web.goBack(in: id) } }) {
-                                    Image(systemName: "chevron.left")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(web.canGoBackForActiveTab ? chromeText : chromeText.opacity(0.35))
-                                        .frame(width: 28, height: 28)
-                                        .background(RoundedRectangle(cornerRadius: 6).fill((web.canGoBackForActiveTab ? chromeText : chromeText.opacity(0.35)).opacity(0.15)))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(!web.canGoBackForActiveTab)
-                                .accessibilityLabel("Back")
+                                ChromeIconButton(
+                                    systemName: "chevron.left",
+                                    tint: chromeText,
+                                    isEnabled: web.canGoBackForActiveTab,
+                                    accessibilityLabel: "Back"
+                                ) { if let id = tabManager.currentTab { web.goBack(in: id) } }
 
-                                Button(action: { if let id = tabManager.currentTab { web.goForward(in: id) } }) {
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(web.canGoForwardForActiveTab ? chromeText : chromeText.opacity(0.35))
-                                        .frame(width: 28, height: 28)
-                                        .background(RoundedRectangle(cornerRadius: 6).fill((web.canGoForwardForActiveTab ? chromeText : chromeText.opacity(0.35)).opacity(0.15)))
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(!web.canGoForwardForActiveTab)
-                                .accessibilityLabel("Forward")
+                                ChromeIconButton(
+                                    systemName: "chevron.right",
+                                    tint: chromeText,
+                                    isEnabled: web.canGoForwardForActiveTab,
+                                    accessibilityLabel: "Forward"
+                                ) { if let id = tabManager.currentTab { web.goForward(in: id) } }
 
-                                Button(action: { if let id = tabManager.currentTab { web.reload(in: id) } }) {
-                                    Image(systemName: "arrow.clockwise")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(chromeText)
-                                        .frame(width: 28, height: 28)
-                                        .background(RoundedRectangle(cornerRadius: 6).fill(chromeText.opacity(0.15)))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("Reload")
+                                ChromeIconButton(
+                                    systemName: "arrow.clockwise",
+                                    tint: chromeText,
+                                    accessibilityLabel: "Reload"
+                                ) { if let id = tabManager.currentTab { web.reload(in: id) } }
                             }
 
                             // Omnibox (unified look: subtle overlay on chrome)
@@ -224,18 +215,18 @@ struct BrowserShellView: View {
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundStyle(chromeTextMuted)
                             }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 7)
                             .frame(maxWidth: .infinity)
-                            .background(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .fill(chromeText.opacity(0.12))
-                            )
+                            .background(Capsule(style: .continuous).fill(chromeText.opacity(0.10)))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(addressBarFocused ? Color.accentColor.opacity(0.8) : Color.clear, lineWidth: 2)
+                                Capsule(style: .continuous)
+                                    .strokeBorder(
+                                        addressBarFocused ? Color.accentColor.opacity(0.7) : chromeText.opacity(0.08),
+                                        lineWidth: addressBarFocused ? 1.5 : 1
+                                    )
                             )
-                            .animation(.easeInOut(duration: 0.1), value: addressBarFocused)
+                            .animation(.easeInOut(duration: 0.12), value: addressBarFocused)
                             .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
                                 handleURLDrop(providers: providers) { url in
                                     addressBarText = url.absoluteString
@@ -243,21 +234,19 @@ struct BrowserShellView: View {
                                 }
                             }
 
-                            // Chat pill
+                            // Chat pill (sparkles: matches the system assistant iconography)
                             Button(action: toggleAIPanel) {
                                 HStack(spacing: 4) {
-                                    Image(systemName: "bubble.left.and.bubble.right")
-                                        .font(.system(size: 10, weight: .medium))
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 11, weight: .medium))
                                     Text("Chat")
                                         .font(.system(size: 12, weight: .medium))
                                 }
                                 .foregroundColor(chromeText)
-                                .padding(.horizontal, 10)
+                                .padding(.horizontal, 11)
                                 .padding(.vertical, 6)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 16)
-                                        .fill(chromeText.opacity(0.15))
-                                )
+                                .background(Capsule(style: .continuous).fill(chromeText.opacity(0.12)))
+                                .overlay(Capsule(style: .continuous).strokeBorder(chromeText.opacity(0.08), lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Toggle AI panel")
@@ -298,7 +287,7 @@ struct BrowserShellView: View {
                                 profileToolbarTint
                             }
                         )
-                        .animation(.easeInOut(duration: 0.25), value: profileManager.activeProfileId)
+                        .animation(.easeInOut(duration: 0.25), value: sessionStore.activeProfileId)
                         .animation(.easeInOut(duration: 0.06), value: chromeColor)
                     }
 
@@ -323,7 +312,7 @@ struct BrowserShellView: View {
                         } else if currentURL?.scheme == "luma", currentURL?.host == "history" {
                             // History page (always in its own tab)
                             // Special luma://history page
-                            HistoryPageView(onSelectURL: { url in
+                            HistoryPageView(historyManager: historyManager, onSelectURL: { url in
                                 navigateToURL(url)
                             })
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -450,16 +439,14 @@ struct BrowserShellView: View {
                                     set: { if !$0 { tabsWithPanelOpen.remove(currentId) } }
                                 ),
                                 messages: Binding(
-                                    get: { tabChatHistory[currentId] ?? [] },
-                                    set: { 
-                                        tabChatHistory[currentId] = $0
-                                        saveChatHistory()
-                                    }
+                                    get: { session.chatStore.messages(for: currentId) },
+                                    set: { session.chatStore.setMessages($0, for: currentId) }
                                 ),
                                 webViewWrapper: web,
                                 commandRouter: router,
                                 gemini: gemini,
                                 ollama: ollama,
+                                historyManager: historyManager,
                                 tabId: currentId
                             ) { response in
                                 pendingAssistantText = response.text
@@ -488,15 +475,29 @@ struct BrowserShellView: View {
                 }
             }
         }
+        .overlay(alignment: .topLeading) {
+            if isStartPage || (currentURL?.scheme == "luma" && currentURL?.host == "ai") {
+                ProfileSwitcherView(
+                    profileManager: profileManager,
+                    activeProfileId: sessionStore.activeProfileId,
+                    onSwitch: switchToProfile,
+                    onOpenInNewWindow: openProfileInNewWindow
+                )
+                .padding(.leading, isFullScreen ? 12 : 82)
+                .padding(.top, shouldShowTabStrip ? 8 : 10)
+            }
+        }
         .alert("Confirm Action", isPresented: $showActionConfirm) {
             Button("Cancel", role: .cancel) { pendingAction = nil }
             Button("Execute") { executePendingAction() }
         } message: {
             if let action = pendingAction {
                 let typeText = action.type.rawValue
-                let payloadKeys = action.payload?.keys.sorted() ?? []
-                let payloadSummary = payloadKeys.isEmpty ? "none" : payloadKeys.joined(separator: ", ")
-                Text("Assistant: \(pendingAssistantText)\n\nAction: \(typeText)\nPayload keys: \(payloadSummary)")
+                let payloadSummary = action.payload?
+                    .sorted { $0.key < $1.key }
+                    .map { "\($0.key): \($0.value)" }
+                    .joined(separator: "\n") ?? "none"
+                Text("Assistant: \(pendingAssistantText)\n\nAction: \(typeText)\n\(payloadSummary)")
             } else {
                 Text("No action to execute.")
             }
@@ -506,7 +507,6 @@ struct BrowserShellView: View {
         }
         .onAppear {
             web.tabManager = tabManager
-            loadChatHistory()
             if tabManager.currentTab == nil {
                 _ = tabManager.newTab(url: nil)
                 if let id = tabManager.currentTab {
@@ -514,7 +514,11 @@ struct BrowserShellView: View {
                     addressBarText = ""
                 }
             }
+            guard eventMonitor == nil else { return }
             eventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                // Only handle shortcuts for this browser window. Prevents double-handling when
+                // multiple windows are open, and keeps sheets/settings windows working normally.
+                guard let host = hostWindow, event.window === host else { return event }
                 let key = event.charactersIgnoringModifiers ?? ""
                 if event.modifierFlags.contains(.command) {
                     if key == "e" {
@@ -575,8 +579,9 @@ struct BrowserShellView: View {
                         DispatchQueue.main.async { web.zoomReset(tabManager.currentTab) }
                         return nil
                     }
-                    // Cmd+F: find in page
+                    // Cmd+F: find in page (web tabs only; start page / AI chat handle it themselves)
                     if key == "f" {
+                        guard !isCurrentTabStartOrAIChat else { return event }
                         DispatchQueue.main.async {
                             showBrowserFindBar.toggle()
                             if !showBrowserFindBar {
@@ -593,7 +598,8 @@ struct BrowserShellView: View {
                 if addressBarKeyState.visible {
                     if event.keyCode == 125 { // Down
                         DispatchQueue.main.async {
-                            addressBarKeyState.selectedIndex = min(addressBarKeyState.selectedIndex + 1, addressBarKeyState.totalCount - 1)
+                            // max(0, …) prevents -1 when suggestions are momentarily empty.
+                            addressBarKeyState.selectedIndex = min(addressBarKeyState.selectedIndex + 1, max(0, addressBarKeyState.totalCount - 1))
                         }
                         return nil
                     }
@@ -608,7 +614,7 @@ struct BrowserShellView: View {
                         return nil
                     }
                 }
-                if event.keyCode == 53 {
+                if event.keyCode == 53 { // Escape
                     if showBrowserFindBar {
                         DispatchQueue.main.async {
                             showBrowserFindBar = false
@@ -617,8 +623,12 @@ struct BrowserShellView: View {
                         }
                         return nil
                     }
-                    DispatchQueue.main.async { restoreAddressBarOnEscape = true }
-                    return nil
+                    if addressBarFocused {
+                        DispatchQueue.main.async { restoreAddressBarOnEscape = true }
+                        return nil
+                    }
+                    // Let Escape reach web content (exit fullscreen video, close site dialogs, etc).
+                    return event
                 }
                 return event
             }
@@ -634,6 +644,17 @@ struct BrowserShellView: View {
         .onChange(of: web.currentURL) { _, _ in
             syncAddressBarFromCurrentTab()
             if web.currentURL != nil { isFirstLoad = false }
+        }
+        .onChange(of: profileManager.profiles) { _, profiles in
+            let validIds = Set(profiles.map(\.id))
+            // Tear down sessions for any deleted profiles, including inactive ones.
+            sessionStore.pruneSessions(keeping: validIds)
+            guard !validIds.contains(sessionStore.activeProfileId) else { return }
+            let deletedId = sessionStore.activeProfileId
+            sessionStore.removeSession(profileId: deletedId)
+            sessionStore.switchTo(profileId: profileManager.lastActiveProfileId)
+            tabsWithPanelOpen = []
+            syncAddressBarFromCurrentTab()
         }
         .onChange(of: restoreAddressBarOnEscape) { _, new in
             if new {
@@ -672,7 +693,7 @@ struct BrowserShellView: View {
             }
         }
         .onDisappear {
-            saveChatHistory()
+            sessionStore.flush()
             if let m = eventMonitor {
                 NSEvent.removeMonitor(m)
                 eventMonitor = nil
@@ -683,66 +704,27 @@ struct BrowserShellView: View {
     // MARK: - Profile switching
 
     private func switchToProfile(_ profile: BrowserProfile) {
-        guard profile.id != profileManager.activeProfileId else { return }
-        let leavingId = profileManager.activeProfileId
-
-        // Save current tab state so we can restore when coming back
-        // (TabManager and WebViewWrapper are already @StateObject; we keep them alive in dictionaries)
-        profileTabManagers[leavingId] = tabManager
-        profileWebWrappers[leavingId] = web
-
-        // Schedule suspension of the outgoing profile's webviews after 5 minutes
-        profileManager.scheduleSuspension(for: leavingId) { [weak tabManager, weak web] in
-            // After 5 min: stop loading / free resources (webviews remain allocated by ARC)
-            // Nothing to explicitly do — WKWebView suspends itself when not visible
-            _ = tabManager; _ = web
-        }
-
-        // Cancel any pending suspension for the incoming profile (we're activating it)
-        profileManager.cancelSuspension(for: profile.id)
-
-        // Switch the profile manager
-        profileManager.switchTo(profileId: profile.id)
+        guard profile.id != sessionStore.activeProfileId else { return }
+        sessionStore.switchTo(profileId: profile.id)
 
         // Reset address bar
         addressBarText = ""
         searchSuggestions = []
         historySuggestions = []
         tabsWithPanelOpen = []
-        tabChatHistory = [:]
-        tabAIChatMessages = [:]
-
-        // If this profile had a saved TabManager, wire it back up
-        // (State objects can't be swapped, so we open a new initial tab for now;
-        //  full per-profile tab persistence requires extracting state into a view model — future work)
-        if let existingTM = profileTabManagers[profile.id] {
-            // Re-point web wrapper to correct tabs
-            if let existingWeb = profileWebWrappers[profile.id] {
-                existingWeb.tabManager = existingTM
-                if let currentTab = existingTM.currentTab {
-                    existingWeb.setActiveTab(currentTab)
-                }
-            }
-        } else {
-            // Brand new profile: start with a blank tab
-            let newTabId = tabManager.newTab(url: nil)
-            web.setActiveTab(newTabId)
-            addressBarText = ""
-        }
+        syncAddressBarFromCurrentTab()
     }
 
     private func openProfileInNewWindow(_ profile: BrowserProfile) {
-        // Switch the profile manager to the target profile for the new window
-        // then open a new NSWindow hosting a BrowserShellView
-        let previousId = profileManager.activeProfileId
-        profileManager.switchTo(profileId: profile.id)
-
         let newWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        // Programmatic NSWindows default to isReleasedWhenClosed = true, which crashes
+        // under ARC when the window closes. Keep a strong reference until it closes instead.
+        newWindow.isReleasedWhenClosed = false
         newWindow.titlebarAppearsTransparent = true
         newWindow.titleVisibility = .hidden
         newWindow.styleMask.insert(.fullSizeContentView)
@@ -751,12 +733,10 @@ struct BrowserShellView: View {
         newWindow.center()
         newWindow.title = "\(profile.name) — Luna"
 
-        let shellView = BrowserShellView()
+        let shellView = BrowserShellView(initialProfileId: profile.id)
         newWindow.contentView = NSHostingView(rootView: shellView)
+        ProfileWindowRegistry.shared.retain(newWindow)
         newWindow.makeKeyAndOrderFront(nil)
-
-        // Restore this window's profile
-        profileManager.switchTo(profileId: previousId)
     }
 
     // MARK: - Helpers
@@ -796,7 +776,7 @@ struct BrowserShellView: View {
             return
         }
         let task = DispatchWorkItem { [trimmed] in
-            let results = HistoryManager.shared.urlAutocompleteSuggestions(prefix: trimmed, limit: 5)
+            let results = historyManager.urlAutocompleteSuggestions(prefix: trimmed, limit: 5)
             self.historySuggestions = results
         }
         historyDebounceTask = task
@@ -805,6 +785,10 @@ struct BrowserShellView: View {
 
     private func fetchSearchSuggestions(for query: String) {
         suggestionDebounceTask?.cancel()
+        guard searchSuggestionsEnabled else {
+            searchSuggestions = []
+            return
+        }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed.count >= 2 else {
             searchSuggestions = []
@@ -837,6 +821,8 @@ struct BrowserShellView: View {
                     return nil
                 }
                 DispatchQueue.main.async {
+                    // Drop stale responses: only apply if the user is still typing this query.
+                    guard self.addressBarText.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
                     self.searchSuggestions = Array(phrases.prefix(5))
                 }
             }.resume()
@@ -939,7 +925,6 @@ struct BrowserShellView: View {
             }
         }
         
-        let title: String = (url.scheme == "file") ? url.lastPathComponent : (url.host ?? url.absoluteString)
         if tabManager.currentTab == nil {
             let id = tabManager.newTab(url: url)
             _ = web.ensureWebView(for: id)
@@ -948,11 +933,6 @@ struct BrowserShellView: View {
         } else if let id = tabManager.currentTab {
             tabManager.navigate(tab: id, to: url)
             web.load(url: url, in: id)
-        }
-        // Don't record start page (about:blank) in history
-        if url.absoluteString != "about:blank" {
-            tabManager.addNavigation(title: title, url: url)
-            HistoryManager.shared.recordPageVisit(url: url, title: title)
         }
         addressBarText = url.absoluteString
     }
@@ -963,11 +943,6 @@ struct BrowserShellView: View {
         web.setActiveTab(id)
         web.load(url: url, in: id)
         tabManager.navigate(tab: id, to: url)
-        if url.absoluteString != "about:blank" {
-            let title = url.host ?? url.absoluteString
-            tabManager.addNavigation(title: title, url: url)
-            HistoryManager.shared.recordPageVisit(url: url, title: title)
-        }
         addressBarText = url.absoluteString
     }
 
@@ -999,8 +974,8 @@ struct BrowserShellView: View {
 
     private func aiChatMessagesBinding(for tabId: UUID) -> Binding<[ChatMessage]> {
         Binding(
-            get: { tabAIChatMessages[tabId] ?? [] },
-            set: { tabAIChatMessages[tabId] = $0 }
+            get: { session.chatStore.messages(for: tabId) },
+            set: { session.chatStore.setMessages($0, for: tabId) }
         )
     }
 
@@ -1034,6 +1009,14 @@ struct BrowserShellView: View {
 
     private func closeCurrentTab() {
         guard let id = tabManager.currentTab else { return }
+        // Safari-like: Cmd+W on the last remaining tab, when it's already an empty
+        // start page, closes the window instead of endlessly respawning new tabs.
+        let url = tabManager.tabURL[id] ?? nil
+        let isEmptyStartPage = (url == nil || url?.absoluteString == "about:blank")
+        if tabManager.tabCount() == 1, isEmptyStartPage {
+            hostWindow?.performClose(nil)
+            return
+        }
         closeTab(id)
     }
 
@@ -1055,8 +1038,7 @@ struct BrowserShellView: View {
     private func closeTab(_ id: UUID) {
         web.removeWebView(for: id)
         tabsWithPanelOpen.remove(id)
-        tabChatHistory.removeValue(forKey: id)
-        tabAIChatMessages.removeValue(forKey: id)
+        session.chatStore.removeMessages(for: id)
         tabManager.closeTab(id)
         if tabManager.currentTab == nil {
             newTab()
@@ -1075,8 +1057,12 @@ struct BrowserShellView: View {
     private func executePendingAction() {
         guard let action = pendingAction else { return }
         let tabToClose: UUID?
-        if action.type == .close_tab, action.payload?["index"] == nil {
-            tabToClose = tabManager.currentTab
+        if action.type == .close_tab {
+            if let raw = action.payload?["index"], let index = Int(raw), index >= 1, index <= tabManager.tabCount() {
+                tabToClose = tabManager.tabOrder[index - 1]
+            } else {
+                tabToClose = tabManager.currentTab
+            }
         } else {
             tabToClose = nil
         }
@@ -1085,6 +1071,8 @@ struct BrowserShellView: View {
         case .success:
             if let id = tabToClose {
                 web.removeWebView(for: id)
+                tabsWithPanelOpen.remove(id)
+                session.chatStore.removeMessages(for: id)
             }
             if action.type == .new_tab || action.type == .navigate,
                let urlString = action.payload?["url"],
@@ -1100,47 +1088,41 @@ struct BrowserShellView: View {
                     addressBarText = url.absoluteString
                 }
             }
+            if action.type == .switch_tab, let id = tabManager.currentTab {
+                web.setActiveTab(id)
+                syncAddressBarFromCurrentTab()
+            }
+            if action.type == .close_tab {
+                if tabManager.currentTab == nil {
+                    newTab()
+                } else if let id = tabManager.currentTab {
+                    web.setActiveTab(id)
+                    syncAddressBarFromCurrentTab()
+                }
+            }
         case .failure:
             break
         }
         pendingAction = nil
     }
     
-    // MARK: - Chat History Persistence (in-app only; chat sessions are not recorded to History)
-    
-    private func saveChatHistory() {
-        let encoder = JSONEncoder()
-        var savedHistory: [String: Data] = [:]
-        
-        for (tabId, messages) in tabChatHistory {
-            if let encoded = try? encoder.encode(messages) {
-                savedHistory[tabId.uuidString] = encoded
-            }
-        }
-        
-        // Save to UserDefaults with a size limit
-        let defaults = UserDefaults.standard
-        for (key, value) in savedHistory {
-            defaults.set(value, forKey: "chat_history_\(key)")
-        }
-    }
-    
-    private func loadChatHistory() {
-        let decoder = JSONDecoder()
-        let defaults = UserDefaults.standard
-        
-        // Get all keys that match our chat history pattern
-        let allKeys = defaults.dictionaryRepresentation().keys
-        let chatKeys = allKeys.filter { $0.hasPrefix("chat_history_") }
-        
-        for key in chatKeys {
-            let uuidString = key.replacingOccurrences(of: "chat_history_", with: "")
-            guard let uuid = UUID(uuidString: uuidString),
-                  let data = defaults.data(forKey: key),
-                  let messages = try? decoder.decode([ChatMessage].self, from: data) else {
-                continue
-            }
-            tabChatHistory[uuid] = messages
+}
+
+// MARK: - Profile window registry
+
+/// Keeps profile windows alive (isReleasedWhenClosed = false) and releases them on close.
+final class ProfileWindowRegistry {
+    static let shared = ProfileWindowRegistry()
+    private var windows: Set<NSWindow> = []
+    private init() {}
+
+    func retain(_ window: NSWindow) {
+        windows.insert(window)
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] note in
+            guard let closed = note.object as? NSWindow else { return }
+            self?.windows.remove(closed)
         }
     }
 }
@@ -1381,56 +1363,6 @@ private struct AddressBarSuggestionsList: View {
     }
 }
 
-// MARK: - History sheet
-
-private struct HistoryView: View {
-    let entries: [HistoryEntry]
-    let onSelect: (URL) -> Void
-    let onDismiss: () -> Void
-
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .short
-        f.timeStyle = .short
-        return f
-    }()
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("History").font(.headline)
-                Spacer()
-                Button("Done", action: onDismiss)
-                    .keyboardShortcut(.escape, modifiers: [])
-            }
-            .padding()
-            Divider()
-            if entries.isEmpty {
-                Text("No history yet")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(entries) { entry in
-                    Button {
-                        onSelect(entry.url)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.title).lineLimit(1).font(.system(size: 13, weight: .medium))
-                            Text(entry.url.absoluteString).lineLimit(1).font(.caption).foregroundColor(.secondary)
-                            Text(Self.dateFormatter.string(from: entry.date)).font(.caption2).foregroundColor(.secondary.opacity(0.8))
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .listStyle(.plain)
-            }
-        }
-        .frame(minWidth: 400, minHeight: 300)
-    }
-}
-
 // MARK: - Panel resize handle
 
 private struct PanelResizeHandle: View {
@@ -1481,6 +1413,9 @@ private struct PanelResizeHandle: View {
                         dragStartWidth = nil
                         isDragging = false
                         NSCursor.pop()
+                        // Hover-exit during the drag was suppressed; balance its push
+                        // now so the resize cursor doesn't stick after the drag ends.
+                        if !isHovering { NSCursor.pop() }
                     }
             )
     }
@@ -1548,7 +1483,7 @@ private struct TabStripView: View {
                     }
                     .onDrop(of: [.plainText], delegate: TabDropDelegate(
                         destinationTab: tabId,
-                        tabs: tabManager.tabOrder,
+                        tabManager: tabManager,
                         draggedTab: $draggedTab,
                         onReorder: onReorder
                     ))
@@ -1585,6 +1520,8 @@ private struct TabStripView: View {
     }
 
     private func urlDropHandler(providers: [NSItemProvider]) -> Bool {
+        // A tab dropped outside any tab pill lands here; reset the drag ghost.
+        draggedTab = nil
         guard let provider = providers.first else { return false }
         if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -1606,6 +1543,36 @@ private struct TabStripView: View {
             }
         }
         return true
+    }
+}
+
+/// Safari-style toolbar icon button: no persistent fill, circular highlight on
+/// hover, tinted to the adaptive chrome text color.
+private struct ChromeIconButton: View {
+    let systemName: String
+    let tint: Color
+    var isEnabled: Bool = true
+    var size: CGFloat = 28
+    var iconSize: CGFloat = 12
+    let accessibilityLabel: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: iconSize, weight: .medium))
+                .foregroundColor(isEnabled ? tint : tint.opacity(0.3))
+                .frame(width: size, height: size)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .background(Circle().fill(tint.opacity(isHovering && isEnabled ? 0.14 : 0)))
+        .onHover { isHovering = $0 }
+        .disabled(!isEnabled)
+        .accessibilityLabel(accessibilityLabel)
+        .animation(.easeOut(duration: 0.12), value: isHovering)
     }
 }
 
@@ -1704,8 +1671,12 @@ private struct TabPill: View {
         }
         .onHover { isHovered = $0 }
         .background(
-            RoundedRectangle(cornerRadius: 6)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(tabBackgroundColor)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.white.opacity(isActive ? 0.10 : 0), lineWidth: 1)
         )
         .animation(.easeInOut(duration: 0.06), value: contentAreaColor)
         .animation(.easeInOut(duration: 0.06), value: isHovered)
@@ -1772,14 +1743,16 @@ struct NonDraggableWindowView: NSViewRepresentable {
 
 private struct TabDropDelegate: DropDelegate {
     let destinationTab: UUID
-    let tabs: [UUID]
+    // Live reference (class) so indices are always computed against the current
+    // order; a captured array snapshot goes stale mid-drag and scrambles tabs.
+    let tabManager: TabManager
     @Binding var draggedTab: UUID?
     let onReorder: (Int, Int) -> Void
     
     func dropEntered(info: DropInfo) {
         guard let draggedTab = draggedTab else { return }
-        guard let fromIndex = tabs.firstIndex(of: draggedTab),
-              let toIndex = tabs.firstIndex(of: destinationTab),
+        guard let fromIndex = tabManager.tabOrder.firstIndex(of: draggedTab),
+              let toIndex = tabManager.tabOrder.firstIndex(of: destinationTab),
               fromIndex != toIndex else { return }
         
         withAnimation(.easeInOut(duration: 0.25)) {
@@ -1886,6 +1859,7 @@ struct WindowDragRegionView: NSViewRepresentable {
 struct TitlebarConfigurator: NSViewRepresentable {
     let tabStripHeight: CGFloat
     @Binding var isFullScreen: Bool
+    @Binding var hostWindow: NSWindow?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -1893,6 +1867,7 @@ struct TitlebarConfigurator: NSViewRepresentable {
         let view = NSView()
         DispatchQueue.main.async {
             guard let window = view.window else { return }
+            self.hostWindow = window
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
             window.styleMask.insert(.fullSizeContentView)
@@ -1919,6 +1894,10 @@ struct TitlebarConfigurator: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {}
 
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator)
+    }
+
     class Coordinator: NSObject {
         var parent: TitlebarConfigurator
 
@@ -1929,6 +1908,10 @@ struct TitlebarConfigurator: NSViewRepresentable {
 
         init(_ parent: TitlebarConfigurator) {
             self.parent = parent
+        }
+
+        nonisolated deinit {
+            NotificationCenter.default.removeObserver(self)
         }
 
         @objc func didEnterFullScreen(_ note: Notification) {
@@ -1944,23 +1927,3 @@ struct TitlebarConfigurator: NSViewRepresentable {
 #Preview {
     BrowserShellView()
 }
-
-// MARK: - SplitBrowserShell integration
-
-// import AppKit
-
-// struct SplitBrowserShell: NSViewControllerRepresentable {
-//     let webView: WKWebView
-//     let aiPanel: AnyView
-
-//     func makeNSViewController(context: Context) -> SplitBrowserShellController {
-//         SplitBrowserShellController(webView: webView, aiPanel: aiPanel)
-//     }
-//     func updateNSViewController(_ nsViewController: SplitBrowserShellController, context: Context) {}
-// }
-
-// Usage:
-// Replace your HStack browser/AI panel region with:
-// SplitBrowserShell(webView: web.ensureWebView(for: currentId), aiPanel: AnyView(CommandSurfaceView(...)))
-// To toggle panel: call splitVC.toggleAIPanel(true/false)
-// You may need to refactor state management to coordinate panel open/close and width.

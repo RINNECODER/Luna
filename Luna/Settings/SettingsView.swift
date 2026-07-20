@@ -21,6 +21,7 @@ struct SettingsView: View {
 private struct GeneralSettingsView: View {
     @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSizeRaw: Int = 13
     @AppStorage("luma_appearance") private var appearance: String = "system"
+    @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
 
     var body: some View {
         ScrollView {
@@ -47,6 +48,12 @@ private struct GeneralSettingsView: View {
                 .padding()
                 .background(Color.gray.opacity(0.1))
                 .cornerRadius(8)
+
+                Toggle("Send typing to search suggestions", isOn: $searchSuggestionsEnabled)
+                    .toggleStyle(.switch)
+                    .padding()
+                    .background(Color.gray.opacity(0.1))
+                    .cornerRadius(8)
 
                 // Appearance (Light / Dark / System)
                 VStack(alignment: .leading, spacing: 12) {
@@ -265,7 +272,6 @@ private struct ModelsSettingsView: View {
             try KeychainManager.shared.storeGeminiKey(trimmed)
             hasKey = true
             keyInput = "" // Clear input field for security
-            GeminiClient.clearClientCaches()
             statusText = "Key saved to Keychain. AI Status: Ready."
         } catch {
             statusText = "Error saving key: \(error.localizedDescription)"
@@ -281,7 +287,6 @@ private struct ModelsSettingsView: View {
         do {
             try KeychainManager.shared.deleteGeminiKey()
             hasKey = false
-            GeminiClient.clearClientCaches()
             statusText = "Key deleted. AI Status: No API key."
         } catch {
             statusText = "Error deleting key: \(error.localizedDescription)"
@@ -314,4 +319,3 @@ private struct ModelsSettingsView: View {
         }
     }
 }
-

@@ -30,12 +30,6 @@ private enum GeminiAPIError: Error {
 
 final class GeminiClient {
 
-    static var lastNetworkError: String?
-
-    static func clearClientCaches() {
-        lastNetworkError = nil
-    }
-
     private let apiKeyProvider: () -> String?
 
     init(apiKeyProvider: @escaping () -> String?) {
@@ -55,12 +49,11 @@ final class GeminiClient {
     ) -> Task<Void, Never> {
         Task {
             guard let apiKey = apiKeyProvider() else {
-                Self.lastNetworkError = "No API key. Add one in Settings."
                 await MainActor.run { onCompletion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
                 return
             }
 
-            guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse&key=\(apiKey)") else {
+            guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse") else {
                 await MainActor.run { onCompletion(.failure(GeminiAPIError.invalidURL)) }
                 return
             }
@@ -75,6 +68,7 @@ final class GeminiClient {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
             request.httpBody = bodyData
 
             do {
@@ -82,46 +76,32 @@ final class GeminiClient {
                 if let http = response as? HTTPURLResponse {
                     switch http.statusCode {
                     case 401:
-                        Self.lastNetworkError = "Unauthorized (401)"
                         await MainActor.run { onCompletion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
                         return
                     case 404:
-                        Self.lastNetworkError = "Endpoint not found (404)"
                         await MainActor.run { onCompletion(.failure(GeminiError.endpointNotFound)) }
                         return
                     case 200: break
                     default:
-                        Self.lastNetworkError = "HTTP \(http.statusCode)"
                         await MainActor.run { onCompletion(.failure(GeminiAPIError.badStatus(http.statusCode))) }
                         return
                     }
                 }
 
-                var lineBuffer = ""
-                for try await byte in asyncBytes {
+                for try await line in asyncBytes.lines {
                     if Task.isCancelled { break }
-                    let char = Character(UnicodeScalar(byte))
-                    if char == "\n" {
-                        let line = lineBuffer
-                        lineBuffer = ""
-                        if line.hasPrefix("data: ") {
-                            let jsonStr = String(line.dropFirst(6))
-                            if jsonStr == "[DONE]" { break }
-                            if let token = Self.extractToken(from: jsonStr) {
-                                let t = token
-                                await MainActor.run { onToken(t) }
-                            }
+                    if line.hasPrefix("data: ") {
+                        let jsonStr = String(line.dropFirst(6))
+                        if jsonStr == "[DONE]" { break }
+                        if let token = Self.extractToken(from: jsonStr) {
+                            await MainActor.run { onToken(token) }
                         }
-                    } else {
-                        lineBuffer.append(char)
                     }
                 }
-                Self.lastNetworkError = nil
                 await MainActor.run { onCompletion(.success(())) }
             } catch is CancellationError {
                 await MainActor.run { onCompletion(.success(())) }
             } catch {
-                Self.lastNetworkError = error.localizedDescription
                 await MainActor.run { onCompletion(.failure(GeminiError.networkFailure(error.localizedDescription))) }
             }
         }
@@ -137,11 +117,10 @@ final class GeminiClient {
         completion: @escaping (Result<Data, Error>) -> Void
     ) {
         guard let apiKey = apiKeyProvider() else {
-            Self.lastNetworkError = "No API key. Add one in Settings."
             DispatchQueue.main.async { completion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
             return
         }
-        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\(apiKey)") else {
+        guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent") else {
             DispatchQueue.main.async { completion(.failure(GeminiAPIError.invalidURL)) }
             return
         }
@@ -154,17 +133,23 @@ final class GeminiClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.httpBody = bodyData
         request.timeoutInterval = 30
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
-                Self.lastNetworkError = error.localizedDescription
                 DispatchQueue.main.async { completion(.failure(GeminiError.networkFailure(error.localizedDescription))) }
                 return
             }
-            if let http = response as? HTTPURLResponse, http.statusCode == 401 {
-                Self.lastNetworkError = "Unauthorized (401)"
-                DispatchQueue.main.async { completion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                switch http.statusCode {
+                case 401, 403:
+                    DispatchQueue.main.async { completion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
+                case 404:
+                    DispatchQueue.main.async { completion(.failure(GeminiError.endpointNotFound)) }
+                default:
+                    DispatchQueue.main.async { completion(.failure(GeminiError.networkFailure("HTTP \(http.statusCode)"))) }
+                }
                 return
             }
             guard let data = data else {
@@ -172,12 +157,9 @@ final class GeminiClient {
                 return
             }
             if let parsed = Self.parseSingleResponse(data: data) {
-                Self.lastNetworkError = nil
                 DispatchQueue.main.async { completion(.success(parsed)) }
             } else {
-                let msg = "Failed to parse Gemini response"
-                Self.lastNetworkError = msg
-                DispatchQueue.main.async { completion(.failure(GeminiError.networkFailure(msg))) }
+                DispatchQueue.main.async { completion(.failure(GeminiError.networkFailure("Failed to parse Gemini response"))) }
             }
         }.resume()
     }
@@ -219,8 +201,9 @@ final class GeminiClient {
             userMessage = prompt
         }
         contents.append(["role": "user", "parts": [["text": userMessage]]])
+        let systemPrompt = "You are Luna, an intelligent browser assistant. Be concise and accurate. Use Markdown when it improves clarity. \(LLMClock.contextLine())"
         return [
-            "system_instruction": ["parts": [["text": "You are Luna, an intelligent browser assistant. Be concise and accurate. Use Markdown when it improves clarity."]]],
+            "system_instruction": ["parts": [["text": systemPrompt]]],
             "contents": contents,
             "generationConfig": ["temperature": 0.7, "maxOutputTokens": 8192]
         ]

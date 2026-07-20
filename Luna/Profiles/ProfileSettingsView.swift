@@ -85,8 +85,8 @@ struct ProfileSettingsView: View {
                 HStack(spacing: 6) {
                     Text(profile.name)
                         .font(.system(size: 14, weight: .semibold))
-                    if profile.id == profileManager.activeProfileId {
-                        Text("Active")
+                    if profile.id == profileManager.lastActiveProfileId {
+                        Text("Last used")
                             .font(.system(size: 10, weight: .medium))
                             .foregroundColor(.white)
                             .padding(.horizontal, 6)
@@ -129,7 +129,7 @@ struct ProfileSettingsView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 10)
                 .stroke(
-                    profile.id == profileManager.activeProfileId
+                    profile.id == profileManager.lastActiveProfileId
                         ? profile.profileColor.color.opacity(0.5)
                         : Color.clear,
                     lineWidth: 1.5
