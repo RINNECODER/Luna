@@ -99,6 +99,10 @@ Tab        { id, url, title, faviconURL, savedURL?, lastActive, isMuted, interac
 
 Settings move from scattered `@AppStorage` keys into a typed `Preferences` model (Codable, observable), with `@AppStorage` keys migrated once.
 
+## Visual direction
+
+Sleek and native to macOS 27: system Liquid Glass materials, standard controls, SF Symbols, and system fonts and colors. No glowing, rainbow, or animated-gradient effects anywhere; focused inputs get only a hairline accent focus ring.
+
 ## Phases
 
 Each phase builds, passes tests, and is checked by running the app before the next one starts. Each phase ends in its own commit.
