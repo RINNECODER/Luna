@@ -37,10 +37,6 @@ ensure_formula() {
 
 ensure_formula xcodegen xcodegen
 
-echo ""
-echo "📦 Generating Xcode project..."
-xcodegen
-echo "✅ Xcode project generated successfully!"
 
 if [ ! -f Signing.xcconfig ]; then
   echo ""
@@ -60,6 +56,11 @@ else
     echo "   (Personal Team from Xcode → Settings → Accounts — \$0)"
   fi
 fi
+
+echo ""
+echo "📦 Generating Xcode project..."
+xcodegen
+echo "✅ Xcode project generated successfully!"
 
 echo ""
 echo "🎉 Setup complete! Open Luna.xcodeproj in Xcode and build (⌘R)."

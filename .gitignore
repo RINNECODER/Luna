@@ -26,3 +26,4 @@ package-lock.json
 # Local code signing (do not commit — use Signing.xcconfig.example to create your own)
 Signing.xcconfig
 
+build/
