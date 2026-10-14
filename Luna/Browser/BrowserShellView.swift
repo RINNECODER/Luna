@@ -71,10 +71,6 @@ struct BrowserShellView: View {
     private let gemini = GeminiClient(apiKeyProvider: { KeychainManager.shared.fetchGeminiKey() })
     private let ollama = OllamaClient()
 
-    // Layout constants
-    private let chromeCornerRadius: CGFloat = 14
-    private let chromePadding: CGFloat = 4
-
     // Chrome options (Settings → Appearance)
     @AppStorage(ChromePrefs.frameless) private var frameless = false
     @AppStorage(ChromePrefs.alwaysShowTopBar) private var alwaysShowTopBar = false
@@ -133,10 +129,10 @@ struct BrowserShellView: View {
                                 pendingAction = response.action
                                 showActionConfirm = (response.action != nil)
                             }
-                            .frame(width: aiPanelWidth - chromePadding)
-                            .clipShape(RoundedRectangle(cornerRadius: chromeCornerRadius))
-                            .padding(.trailing, chromePadding)
-                            .padding(.vertical, chromePadding)
+                            // Floating panel: inset from the window edges; it draws its own glass and shadow.
+                            .frame(width: aiPanelWidth - 10)
+                            .padding(.trailing, 10)
+                            .padding(.vertical, 10)
                         }
                         .transition(.asymmetric(
                             insertion: .move(edge: .trailing).combined(with: .opacity),
@@ -190,6 +186,11 @@ struct BrowserShellView: View {
             DownloadsHubView()
         }
         .onAppear {
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_AI_PANEL"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { toggleAIPanel() }
+            }
+            #endif
             web.tabManager = tabManager
             if tabManager.currentTab == nil {
                 _ = tabManager.newTab(url: nil)
