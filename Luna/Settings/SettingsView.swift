@@ -112,6 +112,7 @@ private struct AppearanceSettingsView: View {
     @AppStorage(ChromePrefs.alwaysShowTopBar) private var alwaysShowTopBar = false
     @AppStorage(ChromePrefs.roundedFrame) private var roundedFrame = true
     @AppStorage(ChromePrefs.showHomeButton) private var showHomeButton = false
+    @AppStorage(ChromePrefs.hideWindowButtons) private var hideWindowButtons = true
     @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSize: Int = 13
 
     private var layout: Binding<BrowserLayout> {
@@ -155,6 +156,10 @@ private struct AppearanceSettingsView: View {
                     }
                     Toggle("Always show the top bar", isOn: $alwaysShowTopBar)
                         .disabled(!frameless)
+                }
+                Toggle(isOn: $hideWindowButtons) {
+                    Text("Hide window buttons with the bar")
+                    Text("The close, minimize and full-screen buttons disappear while the bar or sidebar is hidden.")
                 }
                 Toggle("Show a rounded frame around web contents", isOn: $roundedFrame)
                 if layout.wrappedValue != .sidebar {

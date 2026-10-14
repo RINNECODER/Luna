@@ -77,6 +77,7 @@ struct BrowserShellView: View {
     @AppStorage(ChromePrefs.frameless) private var frameless = false
     @AppStorage(ChromePrefs.alwaysShowTopBar) private var alwaysShowTopBar = false
     @AppStorage(ChromePrefs.roundedFrame) private var roundedFrame = true
+    @AppStorage(ChromePrefs.hideWindowButtons) private var hideWindowButtons = true
     /// Top bar temporarily shown in frameless mode (hover at the top edge, or ⌘L).
     @State private var topBarPeeking = false
 
@@ -334,6 +335,8 @@ struct BrowserShellView: View {
                 return event
             }
         }
+        .onChange(of: trafficLightsHidden, initial: true) { _, _ in applyTrafficLights() }
+        .onChange(of: hostWindow) { _, _ in applyTrafficLights() }
         .onChange(of: tabManager.currentTab) { _, _ in
             askOnPageVisible = false
             web.linkPreview = nil
@@ -415,6 +418,20 @@ struct BrowserShellView: View {
     private var showsTopChrome: Bool { !usesSidebar && (!frameless || alwaysShowTopBar) }
     private var topBarAutoHides: Bool { !usesSidebar && frameless && !alwaysShowTopBar }
     /// The left-edge tab list: a hidden sidebar, or the tab list in frameless top layouts.
+    /// Window buttons disappear with the chrome they sit on (frameless, hidden sidebar)
+    /// and come back while it's revealed.
+    private var trafficLightsHidden: Bool {
+        guard hideWindowButtons, !isFullScreen else { return false }
+        return (topBarAutoHides && !topBarPeeking) || (usesSidebar && !sidebarShown && !sidebarPeeking)
+    }
+
+    private func applyTrafficLights() {
+        guard let window = hostWindow else { return }
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(kind)?.isHidden = trafficLightsHidden
+        }
+    }
+
     private var edgeTabListEnabled: Bool { (usesSidebar && !sidebarShown) || (!usesSidebar && frameless) }
 
     private var profileControl: some View {

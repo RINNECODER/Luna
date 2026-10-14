@@ -48,4 +48,5 @@ enum ChromePrefs {
     static let alwaysShowTopBar = "luna_frameless_always_show_top_bar"
     static let roundedFrame = "luna_rounded_frame"
     static let showHomeButton = "luna_show_home_button"
+    static let hideWindowButtons = "luna_hide_window_buttons"
 }
