@@ -515,7 +515,7 @@ struct SmartSearchView: View {
             .padding(.vertical, 10)
             .frame(maxWidth: SmartTokens.chatMaxWidth)
             .lunaGlass(cornerRadius: 22, interactive: true)
-            .overlay(FocusRing(shape: RoundedRectangle(cornerRadius: 22, style: .continuous), isActive: isInputFocused))
+            .focusShadow(isInputFocused)
         }
         .padding(.horizontal, 32)
         .padding(.bottom, 20)
@@ -607,7 +607,7 @@ struct SmartSearchView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .lunaGlass(cornerRadius: 22, interactive: true)
-        .overlay(FocusRing(shape: RoundedRectangle(cornerRadius: 22, style: .continuous), isActive: isInputFocused))
+        .focusShadow(isInputFocused)
     }
 
     // MARK: - Dynamic submit button

@@ -87,20 +87,23 @@ extension View {
     }
 }
 
-// MARK: - Focus ring (native macOS keyboard-focus treatment for input bars)
+// MARK: - Focus shadow (input bars)
 
-/// A hairline accent stroke shown only while the field has keyboard focus,
-/// matching the system focus ring. No glow, no animation beyond a quick fade.
-struct FocusRing<S: InsettableShape>: View {
-    var shape: S
+/// A small, soft drop shadow that deepens slightly while the field has focus.
+/// No colored ring or glow.
+struct FocusShadow: ViewModifier {
     var isActive: Bool
 
-    var body: some View {
-        shape
-            .strokeBorder(Color.accentColor.opacity(isActive ? 0.55 : 0), lineWidth: 1)
-            .allowsHitTesting(false)
-            .animation(.easeOut(duration: 0.12), value: isActive)
+    func body(content: Content) -> some View {
+        content
+            .compositingGroup()
+            .shadow(color: .black.opacity(isActive ? 0.22 : 0.10), radius: isActive ? 7 : 3, y: isActive ? 2.5 : 1)
+            .animation(.easeOut(duration: 0.15), value: isActive)
     }
+}
+
+extension View {
+    func focusShadow(_ isActive: Bool) -> some View { modifier(FocusShadow(isActive: isActive)) }
 }
 
 // MARK: - Glass icon button (circular, toolbar-grade)

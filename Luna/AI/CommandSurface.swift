@@ -415,7 +415,7 @@ struct CommandSurfaceView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .lunaGlass(cornerRadius: 20, interactive: true)
-            .overlay(FocusRing(shape: RoundedRectangle(cornerRadius: 20, style: .continuous), isActive: isInputFocused))
+            .focusShadow(isInputFocused)
             .accessibilityLabel("Message input")
             .accessibilityHint("Type your message. Enter to send.")
             .padding(.horizontal, 16)

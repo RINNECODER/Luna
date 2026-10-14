@@ -103,7 +103,7 @@ struct SidebarView: View {
         .padding(.horizontal, 10)
         .frame(height: 30)
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.quaternary.opacity(focused ? 1 : 0.7)))
-        .overlay(FocusRing(shape: RoundedRectangle(cornerRadius: 8, style: .continuous), isActive: focused))
+        .focusShadow(focused)
         .contentShape(Rectangle())
         .onTapGesture { addressFocused.wrappedValue = true }
     }
