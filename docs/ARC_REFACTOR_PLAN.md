@@ -103,6 +103,19 @@ Settings move from scattered `@AppStorage` keys into a typed `Preferences` model
 
 Sleek and native to macOS 27: system Liquid Glass materials, standard controls, SF Symbols, and system fonts and colors. No glowing, rainbow, or animated-gradient effects anywhere; focused inputs get only a hairline accent focus ring.
 
+## Progress
+
+- [x] 0. Baseline
+- [x] 1. Workspace model and persistence
+- [x] 2. Per-tab page state and hibernation
+- [x] 3. Sidebar shell (Top Tabs kept as a layout option)
+- [ ] 4. Drag and drop
+- [ ] 5. Split view rendering
+- [ ] 6. Spaces (swipe, themes, auto-archive)
+- [ ] 7. Command bar
+- [ ] 8. Customizability
+- [ ] 9. Cleanup
+
 ## Phases
 
 Each phase builds, passes tests, and is checked by running the app before the next one starts. Each phase ends in its own commit.
