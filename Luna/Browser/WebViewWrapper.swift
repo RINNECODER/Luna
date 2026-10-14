@@ -17,17 +17,22 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     let profileId: UUID
     private let websiteDataStore: WKWebsiteDataStore
     private var webViews: [UUID: WKWebView] = [:]
+    /// The focused tab (in a split, the focused pane). Chrome mirrors its state
+    /// through the `…ForActiveTab` properties; every other visible pane reads
+    /// its own state from the per-tab dictionaries below.
     private(set) var activeTab: UUID?
     @Published var currentURL: URL?
 
     /// Per-tab page theme: background color and whether it is dark (for contrasting text).
-    fileprivate var pageThemeByTab: [UUID: (color: NSColor, isDark: Bool)] = [:]
+    @Published fileprivate(set) var pageThemeByTab: [UUID: (color: NSColor, isDark: Bool)] = [:]
     /// Theme for the currently active tab; used by chrome (tabs, address bar) to match page.
     @Published var pageThemeForActiveTab: (color: Color, isDark: Bool)?
 
-    /// Back/forward state for the active tab (updated in didFinish and when navigating).
-    private var canGoBackByTab: [UUID: Bool] = [:]
-    private var canGoForwardByTab: [UUID: Bool] = [:]
+    /// Per-tab back/forward state (kept live via KVO).
+    @Published private(set) var canGoBackByTab: [UUID: Bool] = [:]
+    @Published private(set) var canGoForwardByTab: [UUID: Bool] = [:]
+    /// Load progress (0…1) for tabs that are currently loading; absent when idle.
+    @Published private(set) var loadingProgressByTab: [UUID: Double] = [:]
     @Published var canGoBackForActiveTab: Bool = false
     @Published var canGoForwardForActiveTab: Bool = false
 
@@ -360,7 +365,41 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
                 self.updateBackForwardForActiveTab()
             }
         }
-        observations[tabId] = [titleObservation, urlObservation, canGoBackObservation, canGoForwardObservation]
+        // Progress is coarsened to 10% steps so a load doesn't re-render the shell on every tick.
+        let progressObservation = wv.observe(\.estimatedProgress, options: [.new]) { [weak self, tabId] webView, _ in
+            DispatchQueue.main.async { self?.updateLoadingProgress(for: tabId, webView: webView) }
+        }
+        let loadingObservation = wv.observe(\.isLoading, options: [.new]) { [weak self, tabId] webView, _ in
+            DispatchQueue.main.async { self?.updateLoadingProgress(for: tabId, webView: webView) }
+        }
+        observations[tabId] = [titleObservation, urlObservation, canGoBackObservation, canGoForwardObservation,
+                               progressObservation, loadingObservation]
+    }
+
+    private func updateLoadingProgress(for tabId: UUID, webView: WKWebView) {
+        guard webViews[tabId] === webView else { return }
+        if webView.isLoading {
+            let stepped = (webView.estimatedProgress * 10).rounded(.down) / 10
+            if loadingProgressByTab[tabId] != stepped { loadingProgressByTab[tabId] = stepped }
+        } else if loadingProgressByTab[tabId] != nil {
+            loadingProgressByTab.removeValue(forKey: tabId)
+        }
+    }
+
+    // MARK: - Per-tab reads
+
+    /// Tabs that currently have a live web view.
+    var loadedTabIds: Set<UUID> { Set(webViews.keys) }
+
+    func pageTheme(for tabId: UUID) -> (color: NSColor, isDark: Bool)? { pageThemeByTab[tabId] }
+
+    /// True when the tab must not be unloaded: playing media or using camera/mic.
+    func isBusy(_ tabId: UUID, completion: @escaping (Bool) -> Void) {
+        guard let wv = webViews[tabId] else { return completion(false) }
+        if wv.cameraCaptureState != .none || wv.microphoneCaptureState != .none { return completion(true) }
+        wv.requestMediaPlaybackState { state in
+            DispatchQueue.main.async { completion(state == .playing) }
+        }
     }
 
     // MARK: - Printing
@@ -665,7 +704,9 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     }
 
     /// Removes a tab's WebView when the tab is closed.
-    func removeWebView(for tabId: UUID) {
+    /// - Parameter keepMetadata: true when hibernating, so the tab keeps its
+    ///   favicon, tint, theme and zoom while unloaded.
+    func removeWebView(for tabId: UUID, keepMetadata: Bool = false) {
         observations.removeValue(forKey: tabId)
         lastFindQueryByTab.removeValue(forKey: tabId)
         // Stop any in-flight load and detach delegates so callbacks can't fire during teardown.
@@ -674,13 +715,16 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
             wv.navigationDelegate = nil
             wv.uiDelegate = nil
         }
-        faviconURLByTab.removeValue(forKey: tabId)
-        primaryTintByTab.removeValue(forKey: tabId)
         webViews.removeValue(forKey: tabId)
-        pageThemeByTab.removeValue(forKey: tabId)
-        zoomByTab.removeValue(forKey: tabId)
-        canGoBackByTab.removeValue(forKey: tabId)
-        canGoForwardByTab.removeValue(forKey: tabId)
+        loadingProgressByTab.removeValue(forKey: tabId)
+        if !keepMetadata {
+            faviconURLByTab.removeValue(forKey: tabId)
+            primaryTintByTab.removeValue(forKey: tabId)
+            pageThemeByTab.removeValue(forKey: tabId)
+            zoomByTab.removeValue(forKey: tabId)
+            canGoBackByTab.removeValue(forKey: tabId)
+            canGoForwardByTab.removeValue(forKey: tabId)
+        }
         if activeTab == tabId {
             activeTab = nil
             currentURL = nil

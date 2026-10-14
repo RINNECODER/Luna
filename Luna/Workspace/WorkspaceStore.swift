@@ -49,6 +49,9 @@ final class WorkspaceStore: ObservableObject {
     var orderedTabIds: [UUID] { workspace.orderedTabIds() }
     func tab(_ id: UUID) -> Tab? { workspace.tabs[id] }
 
+    /// Tabs on screen right now: the active tab, or every pane of its split.
+    var visibleTabIds: [UUID] { workspace.visibleTabIds }
+
     // MARK: - Mutation core
 
     private func perform(_ actionName: String?, _ change: (inout Workspace) -> Void) {
@@ -173,6 +176,12 @@ final class WorkspaceStore: ObservableObject {
     func updateTitle(_ tabId: UUID, _ title: String) {
         guard workspace.tabs[tabId] != nil, workspace.tabs[tabId]?.title != title else { return }
         perform(nil) { $0.tabs[tabId]?.title = title }
+    }
+
+    /// Saves back/forward state for a tab whose web view is being unloaded.
+    func setInteractionState(_ tabId: UUID, _ data: Data?) {
+        guard workspace.tabs[tabId] != nil, workspace.tabs[tabId]?.interactionState != data else { return }
+        perform(nil) { $0.tabs[tabId]?.interactionState = data }
     }
 
     func clearInteractionState(_ tabId: UUID) {

@@ -249,6 +249,12 @@ nonisolated struct Workspace: Codable, Equatable {
 
     func isFavorite(_ tabId: UUID) -> Bool { favorites.contains(tabId) }
 
+    /// The active tab, or every pane of the split it belongs to.
+    var visibleTabIds: [UUID] {
+        guard let active = activeTabId else { return [] }
+        return splitGroup(containing: active)?.panes ?? [active]
+    }
+
     /// The space containing the tab (nil for favorites or unknown tabs).
     func spaceId(containing tabId: UUID) -> UUID? {
         spaces.first { s in s.pinned.contains { $0.tabIds.contains(tabId) } || s.today.contains { $0.tabIds.contains(tabId) } }?.id

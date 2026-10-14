@@ -34,10 +34,11 @@ final class ProfileSession: ObservableObject {
     let webViewWrapper: WebViewWrapper
     let historyManager: HistoryManager
     let chatStore: ChatStore
+    let hibernator: TabHibernator
 
     private var cancellables: Set<AnyCancellable> = []
     private var knownTabIds: Set<UUID> = []
-    private var lastActiveTabId: UUID?
+    private var lastVisibleTabIds: [UUID] = []
 
     // Avoid the MainActor isolated-deinit executor hop that double-frees
     // task-local storage on current macOS runtimes (swiftlang/swift#88036).
@@ -53,6 +54,7 @@ final class ProfileSession: ObservableObject {
         self.historyManager = stores.history
         self.chatStore = stores.chats
         self.webViewWrapper = WebViewWrapper(profileId: profileId, dataStore: dataStore)
+        self.hibernator = TabHibernator(store: self.workspace, web: webViewWrapper)
 
         webViewWrapper.tabManager = tabManager
         webViewWrapper.onNavigationFinished = { [weak tabManager, weak historyManager] tabId, url, title in
@@ -77,7 +79,7 @@ final class ProfileSession: ObservableObject {
             store.activate(first)
         }
         knownTabIds = Set(store.workspace.tabs.keys)
-        lastActiveTabId = store.activeTabId
+        lastVisibleTabIds = store.visibleTabIds
 
         // Switching to an existing tab that has no web view (restored, reset
         // pinned tab, hibernated) loads it. Brand-new tabs are loaded by whoever
@@ -88,15 +90,18 @@ final class ProfileSession: ObservableObject {
 
         if let tabId = store.activeTabId {
             webViewWrapper.setActiveTab(tabId)
-            // Deferred so the restored page loads after the window has rendered.
-            DispatchQueue.main.async { [weak self] in self?.ensureLoaded(tabId) }
+            // Deferred so the restored page(s) load after the window has rendered.
+            let visible = store.visibleTabIds
+            DispatchQueue.main.async { [weak self] in visible.forEach { self?.ensureLoaded($0) } }
         }
+        hibernator.start()
     }
 
     func activate() {
         guard let tabId = workspace.activeTabId else { return }
         webViewWrapper.setActiveTab(tabId)
-        ensureLoaded(tabId)
+        workspace.visibleTabIds.forEach(ensureLoaded)
+        hibernator.start()
     }
 
     /// Creates and loads (or restores) the tab's web view if it has none.
@@ -116,6 +121,7 @@ final class ProfileSession: ObservableObject {
     }
 
     func suspend() {
+        hibernator.stop()
         workspace.flush()
         historyManager.flush()
         chatStore.flush()
@@ -124,16 +130,17 @@ final class ProfileSession: ObservableObject {
     }
 
     private func workspaceWillChange(to ws: Workspace) {
-        let newActive = ws.activeTabId
-        let existedBefore = newActive.map { knownTabIds.contains($0) } ?? false
+        let visible = ws.visibleTabIds
+        let previouslyKnown = knownTabIds
         knownTabIds = Set(ws.tabs.keys)
-        guard newActive != lastActiveTabId else { return }
-        lastActiveTabId = newActive
-        guard let id = newActive, existedBefore else { return }
+        guard visible != lastVisibleTabIds else { return }
+        lastVisibleTabIds = visible
+        let toLoad = visible.filter { previouslyKnown.contains($0) }
+        guard !toLoad.isEmpty else { return }
         // `$workspace` fires before the value is stored; load once it's committed.
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.workspace.activeTabId == id else { return }
-            self.ensureLoaded(id)
+            guard let self else { return }
+            toLoad.filter { self.workspace.visibleTabIds.contains($0) }.forEach(self.ensureLoaded)
         }
     }
 }
