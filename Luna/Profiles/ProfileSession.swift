@@ -35,6 +35,7 @@ final class ProfileSession: ObservableObject {
     let historyManager: HistoryManager
     let chatStore: ChatStore
     let hibernator: TabHibernator
+    let extensions: ExtensionHost
 
     private var cancellables: Set<AnyCancellable> = []
     private var knownTabIds: Set<UUID> = []
@@ -55,12 +56,16 @@ final class ProfileSession: ObservableObject {
         self.chatStore = stores.chats
         self.webViewWrapper = WebViewWrapper(profileId: profileId, dataStore: dataStore)
         self.hibernator = TabHibernator(store: self.workspace, web: webViewWrapper)
+        self.extensions = ExtensionHost(profileId: profileId, dataStore: dataStore)
+        webViewWrapper.extensionController = extensions.controller
 
         webViewWrapper.tabManager = tabManager
-        webViewWrapper.onNavigationFinished = { [weak tabManager, weak historyManager] tabId, url, title in
+        let extensionHost = extensions
+        webViewWrapper.onNavigationFinished = { [weak tabManager, weak historyManager, weak extensionHost] tabId, url, title in
             tabManager?.navigate(tab: tabId, to: url)
             tabManager?.updateTitle(tab: tabId, title: title)
             historyManager?.recordPageVisit(url: url, title: title)
+            extensionHost?.tabChanged(tabId, [.URL, .title, .loading])
         }
         self.workspace.captureInteractionStates = { [weak webViewWrapper] in
             webViewWrapper?.interactionStates() ?? [:]
@@ -98,6 +103,7 @@ final class ProfileSession: ObservableObject {
             DispatchQueue.main.async { [weak self] in visible.forEach { self?.ensureLoaded($0) } }
         }
         hibernator.start()
+        extensions.attach(self)
     }
 
     func activate() {
@@ -178,6 +184,18 @@ final class ProfileSession: ObservableObject {
         let visible = ws.visibleTabIds
         let previouslyKnown = knownTabIds
         knownTabIds = Set(ws.tabs.keys)
+        // Keep extensions' view of tabs current.
+        let previousActive = workspace.activeTabId
+        let opened = knownTabIds.subtracting(previouslyKnown)
+        let closed = previouslyKnown.subtracting(knownTabIds)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            opened.forEach(self.extensions.tabOpened)
+            closed.forEach(self.extensions.tabClosed)
+            if let active = ws.activeTabId, active != previousActive {
+                self.extensions.tabActivated(active, previous: previousActive)
+            }
+        }
         guard visible != lastVisibleTabIds else { return }
         lastVisibleTabIds = visible
         let toLoad = visible.filter { previouslyKnown.contains($0) }

@@ -2,7 +2,7 @@
 
 A fast, AI-powered browser built natively for macOS. Luna combines a SwiftUI-based browsing experience with integrated AI chat, privacy-first design, and a clean interface that feels at home on your Mac.
 
-![macOS](https://img.shields.io/badge/macOS-15.0%2B-blue)
+![macOS](https://img.shields.io/badge/macOS-15.4%2B-blue)
 ![Xcode](https://img.shields.io/badge/Xcode-26.x-blue)
 ![Swift](https://img.shields.io/badge/Swift-5-orange)
 ![License](https://img.shields.io/badge/License-MIT-green)

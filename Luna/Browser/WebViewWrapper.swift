@@ -90,6 +90,8 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     
     /// TabManager reference for updating titles
     weak var tabManager: TabManager?
+    /// The profile's web-extension controller; attached to every tab's configuration.
+    weak var extensionController: WKWebExtensionController?
     var onNavigationFinished: ((UUID, URL, String) -> Void)?
 
     init(profileId: UUID, dataStore: WKWebsiteDataStore) {
@@ -510,6 +512,7 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         let config = WKWebViewConfiguration()
         // Use per-profile data store so cookies/sessions are fully isolated between profiles.
         config.websiteDataStore = websiteDataStore
+        config.webExtensionController = extensionController
         // Enable JavaScript via per-navigation preferences (preferences.javaScriptEnabled is deprecated).
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         // Enable Web Inspector + "Inspect Element" in context menu (macOS WebKit Developer Extras).

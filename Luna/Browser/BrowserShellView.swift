@@ -505,6 +505,7 @@ struct BrowserShellView: View {
             showsTabs: showsTabs,
             downloadsCount: downloadManager.recentDownloads.count,
             profileControl: AnyView(profileControl),
+            extensions: session.extensions,
             actions: topChromeActions
         )
     }
@@ -584,6 +585,7 @@ struct BrowserShellView: View {
             onSubmitAddress: { applyAddressBarSubmit() },
             onToggleSidebar: toggleSidebar,
             onShowDownloads: { showDownloadsHub = true },
+            extensions: session.extensions,
             profileControl: AnyView(profileControl)
         )
     }

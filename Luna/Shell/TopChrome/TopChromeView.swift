@@ -26,6 +26,7 @@ struct TopChromeView: View {
     let showsTabs: Bool
     let downloadsCount: Int
     let profileControl: AnyView
+    let extensions: ExtensionHost
     let actions: TopChromeActions
 
     @AppStorage(ChromePrefs.centeredAddressBar) private var centeredAddressBar = false
@@ -146,6 +147,7 @@ struct TopChromeView: View {
 
     private var toolbarIcons: some View {
         HStack(spacing: 2) {
+            ExtensionButtons(host: extensions)
             ToolbarIconButton(systemName: "sparkles", help: "Luna AI (⌘E)", action: actions.toggleAI)
             ZStack(alignment: .topTrailing) {
                 ToolbarIconButton(systemName: "arrow.down.circle", help: "Downloads", action: actions.showDownloads)

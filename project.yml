@@ -2,7 +2,7 @@ name: Luna
 options:
   bundleIdPrefix: com.luna
   deploymentTarget:
-    macOS: "15.0"
+    macOS: "15.4"
   xcodeVersion: "26.2"
   defaultConfig: Release
 

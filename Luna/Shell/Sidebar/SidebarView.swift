@@ -12,6 +12,7 @@ struct SidebarView: View {
     let onSubmitAddress: () -> Void
     let onToggleSidebar: () -> Void
     let onShowDownloads: () -> Void
+    let extensions: ExtensionHost
     /// Profile switcher, supplied by the shell (it owns profile state).
     let profileControl: AnyView
 
@@ -107,6 +108,7 @@ struct SidebarView: View {
                     actions.newTab()
                 }
             }
+            ExtensionButtons(host: extensions, maxVisible: 2)
             ToolbarIconButton(systemName: "arrow.down.circle", help: "Downloads", action: onShowDownloads)
         }
         .frame(height: 28)
