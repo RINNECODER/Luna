@@ -109,12 +109,48 @@ Sleek and native to macOS 27: system Liquid Glass materials, standard controls, 
 - [x] 1. Workspace model and persistence
 - [x] 2. Per-tab page state and hibernation
 - [x] 3. Sidebar shell (Top Tabs kept as a layout option)
+- [ ] A. AI input focus: no blue ring, small shadow
+- [ ] B. Helium layouts + appearance options + native Settings window
+- [ ] C. Profiles without the popover (native menus + Settings pane)
+- [ ] D. AI panel redesign (Desktop LUNA / Siri style) + nicer tab/document attachments
+- [ ] E. Cloud models: Sign in with ChatGPT, OpenAI and Anthropic API keys
+- [ ] F. Luna Max (Arc Max equivalent)
 - [ ] 4. Drag and drop
 - [ ] 5. Split view rendering
 - [ ] 6. Spaces (swipe, themes, auto-archive)
 - [ ] 7. Command bar
-- [ ] 8. Customizability
+- [ ] 8. Remaining customizability (privacy, per-site, Boosts, shortcuts)
 - [ ] 9. Cleanup
+
+## Round 2 additions (2026-10-13)
+
+### B. Layouts (from Helium's Appearance settings)
+
+| Layout | Shape |
+|---|---|
+| Sidebar (default) | Arc-style vertical sidebar (phase 3) |
+| Compact | One row: traffic lights, nav, URL field, tabs inline to its right, toolbar icons |
+| Dynamic | Row 1: nav + (optionally centered) address bar + icons; row 2: tabs |
+| Classic | Row 1: tabs beside the traffic lights; row 2: nav + address bar + icons |
+
+Options: centered address bar, minimal URL (domain only until focused), loading progress in the address bar, frameless mode (chrome hides until you hover the window edge; vertical tab list slides in from the left edge, as in Helium) with "always show top bar", rounded frame around web contents, home button.
+
+Settings becomes a native macOS 27 Settings window: category sidebar (Profiles, Appearance, AI & Models, Privacy, Search, Tabs, Downloads, About), a search field, and grouped rows with toggles and pop-up menus, mirroring Helium's structure.
+
+### C. Profiles
+No floating popover. Profiles live in a native menu (sidebar avatar button and a Profiles menu-bar menu: switch, open in new window, new profile, manage) and a Settings → Profiles pane for create/rename/color/delete.
+
+### D. AI panel
+Modeled on the Desktop LUNA Safari extension and the Siri app: floating rounded glass panel inset from the window edge, header with circular icon buttons, an animated Siri orb only in the empty state, iMessage-style user bubbles and plain assistant text, a capsule input with a small soft shadow (no colored ring). Context shows as compact capsule chips (favicon + title, × on hover). The + button opens a searchable menu of open tabs (favicons, titles, hosts) and "Choose Files…", with drag-and-drop of files onto the panel.
+
+### E. Cloud models
+- **ChatGPT (Sign in with ChatGPT):** OpenAI's official open-source/local-app flow. Authorization code + PKCE (S256) in the system browser, loopback redirect `http://127.0.0.1:<port>/auth/callback`, `client_id=dynamic_agent_client` on first registration with `agent_name_hint=Luna` and a persisted `ext_agent_host_id`, scopes `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct`, resource `https://api.openai.com/v1`. Issued client ID and tokens stored in the Keychain; rotating refresh; revocation on sign-out. Inference via `POST /v1/responses` (`stream: true`, `store: false`), models from `GET /v1/models`. Requires enabling the sandbox's incoming-network entitlement for the loopback listener.
+- **OpenAI API key** as an alternative.
+- **Anthropic:** API key from the Claude Console (Anthropic offers no third-party sign-in and prohibits reusing Claude subscription logins in other apps). Messages API with streaming.
+- Gemini and Ollama stay.
+
+### F. Luna Max (Arc Max equivalent)
+Ask on Page (hold ⌘F), link previews (hover a link and press Shift for an AI summary), tidy titles for pinned tabs, tidy downloads (rename files, one-click undo), Tidy Today (group Today tabs into folders), and asking AI from the command bar. Each feature toggles individually and uses the selected model.
 
 ## Phases
 
