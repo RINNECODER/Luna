@@ -123,7 +123,6 @@ private struct AppearanceSettingsView: View {
     @AppStorage(ChromePrefs.hideWindowButtons) private var hideWindowButtons = true
     @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSize: Int = 13
     @AppStorage(StartPagePrefs.showShortcuts) private var showShortcuts = true
-    @AppStorage(StartPagePrefs.showFrequent) private var showFrequent = true
     @ObservedObject private var shortcutStore = ShortcutStore.shared
     @State private var confirmRemoveShortcuts = false
 
@@ -182,19 +181,10 @@ private struct AppearanceSettingsView: View {
             Section {
                 Toggle(isOn: $showShortcuts) {
                     Text("Show shortcuts")
-                    Text("Site tiles under the search bar on the start page.")
+                    Text("Your site tiles under the search bar on the start page.")
                 }
-                Toggle(isOn: $showFrequent) {
-                    Text("Include frequently visited sites")
-                    Text("Fills spare tiles with the sites you visit most.")
-                }
-                .disabled(!showShortcuts)
-                HStack {
-                    Button("Remove All Shortcuts…") { confirmRemoveShortcuts = true }
-                        .disabled(shortcutStore.shortcuts.isEmpty)
-                    Button("Show Hidden Sites Again") { shortcutStore.unhideAll() }
-                        .disabled(shortcutStore.hiddenHosts.isEmpty)
-                }
+                Button("Remove All Shortcuts…") { confirmRemoveShortcuts = true }
+                    .disabled(shortcutStore.shortcuts.isEmpty)
             } header: {
                 Text("Start page")
             }
@@ -325,7 +315,7 @@ private struct AboutSettingsView: View {
                         .resizable()
                         .frame(width: 56, height: 56)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Luna").font(.title2.weight(.semibold))
+                        Text("Luna").font(LunaType.brand(size: 22))
                         Text(version).foregroundStyle(.secondary)
                     }
                 }

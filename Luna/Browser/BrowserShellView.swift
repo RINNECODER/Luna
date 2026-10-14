@@ -41,6 +41,9 @@ struct BrowserShellView: View {
     @State private var isDraggingDivider: Bool = false
     @State private var eventMonitor: Any?
     @State private var scrollMonitor: Any?
+    /// Clicks inside a split pane focus that pane (and still reach the page).
+    @State private var paneClickMonitor: Any?
+    @State private var paneFrames: [UUID: CGRect] = [:]
     /// Horizontal trackpad travel over the chrome in the current gesture (profile swipe).
     @State private var swipeTravel: CGFloat = 0
     @State private var swipeConsumed = false
@@ -120,48 +123,8 @@ struct BrowserShellView: View {
                     .animation(.easeInOut(duration: 0.08), value: tabManager.currentTab)
 
                     // ─── AI side panel (hidden on start page and AI chat) ────────
-                    if let currentId = tabManager.currentTab, tabsWithPanelOpen.contains(currentId), !isCurrentTabStartOrAIChat {
-                        HStack(spacing: 0) {
-                            PanelResizeHandle(panelWidth: $aiPanelWidth, windowWidth: geometry.size.width, isDragging: $isDraggingDivider)
-
-                            CommandSurfaceView(
-                                isPresented: Binding(
-                                    get: { tabsWithPanelOpen.contains(currentId) },
-                                    set: { if !$0 { tabsWithPanelOpen.remove(currentId) } }
-                                ),
-                                messages: Binding(
-                                    get: { session.chatStore.messages(for: currentId) },
-                                    set: { session.chatStore.setMessages($0, for: currentId) }
-                                ),
-                                webViewWrapper: web,
-                                commandRouter: router,
-                                gemini: gemini,
-                                ollama: ollama,
-                                historyManager: historyManager,
-                                tabId: currentId
-                            ) { response in
-                                pendingAssistantText = response.text
-                                pendingAction = response.action
-                                showActionConfirm = (response.action != nil)
-                            }
-                            // Floating panel: inset from the window edges; it draws its own glass and shadow.
-                            .frame(width: aiPanelWidth - 10)
-                            .padding(.trailing, 10)
-                            .padding(.vertical, 10)
-                        }
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .trailing).combined(with: .opacity)
-                        ))
-                        .animation(isDraggingDivider ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: tabsWithPanelOpen.contains(currentId))
-                        .animation(isDraggingDivider ? nil : .spring(response: 0.3, dampingFraction: 0.9), value: aiPanelWidth)
-                        .onAppear {
-                            if shouldResetPanelWidth {
-                                // Set to 1/3 of total width
-                                aiPanelWidth = geometry.size.width / 3
-                                shouldResetPanelWidth = false
-                            }
-                        }
+                    if let currentId = tabManager.currentTab, tabsWithPanelOpen.contains(panelKey(for: currentId)), !isCurrentTabStartOrAIChat {
+                        aiPanel(for: currentId, windowWidth: geometry.size.width)
                     }
                 }
                 .overlay(alignment: .leading) {
@@ -240,6 +203,16 @@ struct BrowserShellView: View {
         }
         .onAppear {
             #if DEBUG
+            if let raw = ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_URL"], let url = URL(string: raw) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { navigateToURL(url) }
+            }
+            if let raw = ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_SPLIT_URL"], let url = URL(string: raw) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    let first = tabManager.currentTab
+                    newTabWithURL(url)
+                    if let first, let second = tabManager.currentTab { session.workspace.splitTab(second, onto: first) }
+                }
+            }
             if ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_AI_PANEL"] != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { toggleAIPanel() }
             }
@@ -258,6 +231,17 @@ struct BrowserShellView: View {
             if scrollMonitor == nil {
                 scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
                     handleProfileSwipe(event) ? nil : event
+                }
+            }
+            if paneClickMonitor == nil {
+                paneClickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { event in
+                    guard let host = hostWindow, event.window === host, let content = host.contentView else { return event }
+                    let p = event.locationInWindow
+                    let point = CGPoint(x: p.x, y: content.bounds.height - p.y)
+                    if let pane = paneFrames.first(where: { $0.value.contains(point) })?.key, pane != tabManager.currentTab {
+                        DispatchQueue.main.async { switchToTab(pane) }
+                    }
+                    return event
                 }
             }
             guard eventMonitor == nil else { return }
@@ -479,6 +463,10 @@ struct BrowserShellView: View {
                 NSEvent.removeMonitor(m)
                 scrollMonitor = nil
             }
+            if let m = paneClickMonitor {
+                NSEvent.removeMonitor(m)
+                paneClickMonitor = nil
+            }
         }
     }
 
@@ -526,7 +514,9 @@ struct BrowserShellView: View {
             activate: { switchToTab($0) },
             close: { closeTab($0) },
             newTab: { newTab() },
-            reorder: { tabManager.moveTab(from: $0, to: $1) },
+            split: { dropped, target in
+                if session.workspace.splitTab(dropped, onto: target) != nil { switchToTab(dropped) }
+            },
             submitAddress: { applyAddressBarSubmit() },
             goHome: { goHome() },
             toggleAI: { toggleAIPanel() },
@@ -698,8 +688,37 @@ struct BrowserShellView: View {
 
     @ViewBuilder
     private var contentArea: some View {
-            // ─── Web content or start page ───────────────────────────
+            // ─── Web content or start page (one pane, or a split) ─────
             if let currentId = tabManager.currentTab {
+                if let group = session.workspace.workspace.splitGroup(containing: currentId) {
+                    SplitPanesView(
+                        group: group,
+                        focused: currentId,
+                        rounded: roundedFrame,
+                        onRatios: { session.workspace.setSplitRatios(group.id, $0) },
+                        onRemove: { session.workspace.removeFromSplit($0) },
+                        paneFrames: $paneFrames
+                    ) { id in
+                        tabContent(id, isFocused: id == currentId)
+                    }
+                    .onDisappear { paneFrames = [:] }
+                    .sheet(isPresented: $showGoogleAPIKeyHelpSheet) { GoogleAPIKeyHelpView() }
+                } else {
+                    tabContent(currentId, isFocused: true)
+                        .sheet(isPresented: $showGoogleAPIKeyHelpSheet) { GoogleAPIKeyHelpView() }
+                }
+            } else {
+                Color(nsColor: .windowBackgroundColor)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(Text("No tab").foregroundColor(.secondary))
+            }
+    }
+
+
+    /// One tab's content: the AI start page, history, or its web view with the
+    /// page overlays. Overlays tied to the focused tab only show in its pane.
+    @ViewBuilder
+    private func tabContent(_ currentId: UUID, isFocused: Bool) -> some View {
                 let currentURL = tabManager.tabURL[currentId] ?? nil
                 let isStartPage = (currentURL == nil || currentURL?.absoluteString == "about:blank")
                 let isAIChat = currentURL?.scheme == "luma" && currentURL?.host == "ai"
@@ -712,7 +731,6 @@ struct BrowserShellView: View {
                         webViewWrapper: web,
                         tabId: currentId,
                         messages: aiChatMessagesBinding(for: currentId),
-                        historyManager: historyManager,
                         onNavigate: { url in navigateToURL(url) }
                     )
                     .id(currentId)
@@ -729,7 +747,7 @@ struct BrowserShellView: View {
                         WebViewContainer(webView: web.ensureWebView(for: currentId))
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .id(currentId)
-                        if isFirstLoad {
+                        if isFocused && isFirstLoad {
                             ProgressView()
                                 .scaleEffect(0.8)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -797,7 +815,7 @@ struct BrowserShellView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: web.passwordFillOffer)
                         .animation(.spring(response: 0.3, dampingFraction: 0.85), value: web.passwordSaveOffer)
-                        if askOnPageVisible {
+                        if isFocused && askOnPageVisible {
                             AskOnPageBar(tabId: currentId, web: web, onClose: { askOnPageVisible = false })
                                 .padding(.top, 12)
                                 .padding(.trailing, 12)
@@ -805,7 +823,7 @@ struct BrowserShellView: View {
                                 .transition(.move(edge: .top).combined(with: .opacity))
                                 .id(currentId)
                         }
-                        if showBrowserFindBar {
+                        if isFocused && showBrowserFindBar {
                             BrowserFindBar(
                                 query: $browserFindQuery,
                                 onFind: { query in
@@ -838,15 +856,7 @@ struct BrowserShellView: View {
                     .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
                         handleURLDrop(providers: providers, action: { navigateToURL($0) })
                     }
-                    .sheet(isPresented: $showGoogleAPIKeyHelpSheet) {
-                        GoogleAPIKeyHelpView()
-                    }
                 }
-            } else {
-                Color(nsColor: .windowBackgroundColor)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .overlay(Text("No tab").foregroundColor(.secondary))
-            }
     }
 
     /// Address suggestions, placed under whichever address field is on screen.
@@ -1218,14 +1228,69 @@ struct BrowserShellView: View {
         return false
     }
 
+    /// AI side panel for a tab (shared by every pane when the tab is in a split).
+    private func aiPanel(for currentId: UUID, windowWidth: CGFloat) -> some View {
+        let key = panelKey(for: currentId)
+        let peers = session.workspace.workspace.splitGroup(containing: currentId)?.panes.filter { $0 != currentId } ?? []
+        return HStack(spacing: 0) {
+            PanelResizeHandle(panelWidth: $aiPanelWidth, windowWidth: windowWidth, isDragging: $isDraggingDivider)
+
+            CommandSurfaceView(
+                isPresented: Binding(
+                    get: { tabsWithPanelOpen.contains(key) },
+                    set: { if !$0 { tabsWithPanelOpen.remove(key) } }
+                ),
+                // A split shares one conversation, keyed by the split.
+                messages: Binding(
+                    get: { session.chatStore.messages(for: key) },
+                    set: { session.chatStore.setMessages($0, for: key) }
+                ),
+                webViewWrapper: web,
+                commandRouter: router,
+                gemini: gemini,
+                ollama: ollama,
+                historyManager: historyManager,
+                onActionProposed: { response in
+                    pendingAssistantText = response.text
+                    pendingAction = response.action
+                    showActionConfirm = (response.action != nil)
+                },
+                tabId: currentId,
+                splitPeers: peers
+            )
+            // Docked like the sidebar: it sits on the window chrome beside the page.
+            .frame(width: aiPanelWidth - 6)
+        }
+        .transition(.asymmetric(
+            insertion: .move(edge: .trailing).combined(with: .opacity),
+            removal: .move(edge: .trailing).combined(with: .opacity)
+        ))
+        .animation(isDraggingDivider ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: tabsWithPanelOpen.contains(key))
+        .animation(isDraggingDivider ? nil : .spring(response: 0.3, dampingFraction: 0.9), value: aiPanelWidth)
+        .onAppear {
+            if shouldResetPanelWidth {
+                // Set to 1/3 of total width
+                aiPanelWidth = windowWidth / 3
+                shouldResetPanelWidth = false
+            }
+        }
+
+    }
+
+    /// The AI panel belongs to a tab, or to the whole split it's in.
+    private func panelKey(for tabId: UUID) -> UUID {
+        session.workspace.workspace.splitGroup(containing: tabId)?.id ?? tabId
+    }
+
     private func toggleAIPanel() {
         guard let id = tabManager.currentTab else { return }
         guard !isCurrentTabStartOrAIChat else { return }
-        if tabsWithPanelOpen.contains(id) {
-            tabsWithPanelOpen.remove(id)
+        let key = panelKey(for: id)
+        if tabsWithPanelOpen.contains(key) {
+            tabsWithPanelOpen.remove(key)
         } else {
             shouldResetPanelWidth = true
-            tabsWithPanelOpen.insert(id)
+            tabsWithPanelOpen.insert(key)
         }
     }
 
@@ -1625,12 +1690,8 @@ private struct PanelResizeHandle: View {
     private var maxWidth: CGFloat { windowWidth / 2 }
 
     var body: some View {
-        Rectangle()
-            .fill(
-                (isHovering || isDragging)
-                    ? Color.white.opacity(0.3)
-                    : Color.white.opacity(0.1)
-            )
+        // Invisible, like the sidebar's edge: the cursor shows it's draggable.
+        Color.clear
             .frame(width: 6)
             .contentShape(Rectangle())
             .onHover { hovering in
@@ -1670,10 +1731,35 @@ private struct PanelResizeHandle: View {
 }
 // MARK: - NSViewRepresentables
 
+/// Hosts a tab's long-lived WKWebView. The web view sits inside a plain
+/// container instead of being the representable's own view, so when a tab
+/// moves (into or out of a split) SwiftUI tearing down the old container
+/// can't pull the page out of the new one.
 struct WebViewContainer: NSViewRepresentable {
     let webView: WKWebView
-    func makeNSView(context: Context) -> WKWebView { webView }
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
+
+    func makeNSView(context: Context) -> NSView {
+        let host = NSView()
+        attach(to: host)
+        return host
+    }
+
+    func updateNSView(_ host: NSView, context: Context) {
+        attach(to: host)
+    }
+
+    static func dismantleNSView(_ host: NSView, coordinator: ()) {
+        // Only detaches the web view if it still lives here.
+        host.subviews.forEach { $0.removeFromSuperview() }
+    }
+
+    private func attach(to host: NSView) {
+        guard webView.superview !== host else { return }
+        webView.removeFromSuperview()
+        webView.frame = host.bounds
+        webView.autoresizingMask = [.width, .height]
+        host.addSubview(webView)
+    }
 }
 
 /// NSView that disallows window drag (returns false for mouseDownCanMoveWindow).

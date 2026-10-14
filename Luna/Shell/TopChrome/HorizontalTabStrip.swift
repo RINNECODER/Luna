@@ -10,9 +10,13 @@ struct HorizontalTabStrip: View {
     let onActivate: (UUID) -> Void
     let onClose: (UUID) -> Void
     let onNewTab: () -> Void
-    let onReorder: (Int, Int) -> Void
+    /// Dropped tab, target tab: open them side by side.
+    let onSplit: (UUID, UUID) -> Void
 
+    /// Tab being dragged (set when a drag starts in this strip).
     @State private var dragging: UUID?
+    /// Tab the drag is resting on the middle of; dropping there splits.
+    @State private var splitTarget: UUID?
 
     private static let iconTabWidth: CGFloat = 38
     private static let minTabWidth: CGFloat = 72
@@ -33,23 +37,34 @@ struct HorizontalTabStrip: View {
                     ForEach(Array(ids.enumerated()), id: \.element) { index, id in
                         if let tab = ws.tabs[id] {
                             let iconOnly = persistent.contains(id)
+                            let tabWidth = iconOnly ? Self.iconTabWidth : width
+                            let split = ws.splitGroup(containing: id)
                             StripTab(
                                 tab: tab,
                                 faviconURL: web.faviconURLByTab[id] ?? nil,
                                 isActive: ws.activeTabId == id,
                                 isLoading: web.loadingProgressByTab[id] != nil,
                                 iconOnly: iconOnly,
-                                showsSeparator: index > 0 && ws.activeTabId != id && ws.activeTabId != ids[index - 1],
+                                showsSeparator: index > 0 && ws.activeTabId != id && ws.activeTabId != ids[index - 1]
+                                    && !(split != nil && split?.panes.contains(ids[index - 1]) == true),
+                                isSplitTarget: splitTarget == id,
+                                inSplit: split != nil,
+                                isVisible: ws.visibleTabIds.contains(id),
                                 onSelect: { onActivate(id) },
-                                onClose: { onClose(id) }
+                                onClose: { onClose(id) },
+                                onSplitWithCurrent: ws.activeTabId.flatMap { active in
+                                    active != id && !ws.isFavorite(active) && !ws.isFavorite(id) ? { onSplit(id, active) } : nil
+                                },
+                                onRemoveFromSplit: split.map { _ in { store.removeFromSplit(id) } }
                             )
-                            .frame(width: iconOnly ? Self.iconTabWidth : width, height: height)
-                            .opacity(dragging == id ? 0.5 : 1)
+                            .frame(width: tabWidth, height: height)
                             .onDrag {
                                 dragging = id
-                                return NSItemProvider(object: id.uuidString as NSString)
+                                return Self.itemProvider(for: id)
                             }
-                            .onDrop(of: [.plainText], delegate: StripDropDelegate(target: id, ids: ids, dragging: $dragging, onReorder: onReorder))
+                            .onDrop(of: [.lunaNode], delegate: StripDropDelegate(
+                                target: id, width: tabWidth, store: store,
+                                dragging: $dragging, splitTarget: $splitTarget, onSplit: onSplit))
                         }
                     }
                     Button(action: onNewTab) {
@@ -64,11 +79,26 @@ struct HorizontalTabStrip: View {
                     .padding(.leading, 4)
                 }
                 .background(NonDraggableWindowView())
+                .animation(.spring(response: 0.25, dampingFraction: 0.86), value: ids)
             }
             .scrollDisabled(titled == 0 || CGFloat(titled) * Self.minTabWidth <= available)
         }
         .frame(height: height)
     }
+
+    static func itemProvider(for id: UUID) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.lunaNode.identifier, visibility: .ownProcess) { done in
+            done(Data(id.uuidString.utf8), nil)
+            return nil
+        }
+        return provider
+    }
+}
+
+extension UTType {
+    /// In-app drag type for tabs (same identifier as the sidebar's pasteboard type).
+    static let lunaNode = UTType(exportedAs: "com.luna.browser.node")
 }
 
 private struct StripTab: View {
@@ -78,8 +108,13 @@ private struct StripTab: View {
     let isLoading: Bool
     let iconOnly: Bool
     let showsSeparator: Bool
+    var isSplitTarget = false
+    var inSplit = false
+    var isVisible = false
     let onSelect: () -> Void
     let onClose: () -> Void
+    var onSplitWithCurrent: (() -> Void)?
+    var onRemoveFromSplit: (() -> Void)?
 
     @State private var isHovered = false
 
@@ -114,10 +149,23 @@ private struct StripTab: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.quaternary.opacity(isActive ? 1 : (isHovered ? 0.5 : 0)))
+                // Split partners on screen get a lighter fill than the focused pane.
+                .fill(.quaternary.opacity(isActive ? 1 : (isVisible ? 0.6 : (isHovered ? 0.5 : 0))))
                 .padding(.vertical, 2)
                 .padding(.horizontal, 1)
         )
+        .overlay {
+            // Drop here to open side by side.
+            if isSplitTarget {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.accentColor.opacity(0.12)))
+                    .overlay(Image(systemName: "rectangle.split.2x1").font(.system(size: 11, weight: .semibold)).foregroundStyle(Color.accentColor))
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 1)
+                    .allowsHitTesting(false)
+            }
+        }
         .overlay(alignment: .leading) {
             if showsSeparator {
                 Rectangle().fill(.separator).frame(width: 1, height: 14)
@@ -128,27 +176,57 @@ private struct StripTab: View {
         .onHover { isHovered = $0 }
         .help(displayTitle(for: tab))
         .contextMenu {
+            if let onSplitWithCurrent {
+                Button("Open in Split View with Current Tab", action: onSplitWithCurrent)
+            }
+            if let onRemoveFromSplit {
+                Button("Remove from Split View", action: onRemoveFromSplit)
+            }
             Button("Close Tab", action: onClose)
         }
     }
 }
 
+/// Live reordering: the dragged tab slides in front of or behind the tab
+/// under the pointer. Resting on a tab's middle third targets a split instead.
 private struct StripDropDelegate: DropDelegate {
     let target: UUID
-    let ids: [UUID]
+    let width: CGFloat
+    let store: WorkspaceStore
     @Binding var dragging: UUID?
-    let onReorder: (Int, Int) -> Void
+    @Binding var splitTarget: UUID?
+    let onSplit: (UUID, UUID) -> Void
 
-    func dropEntered(info: DropInfo) {
-        guard let dragging, dragging != target,
-              let from = ids.firstIndex(of: dragging), let to = ids.firstIndex(of: target) else { return }
-        onReorder(from, to > from ? to + 1 : to)
+    private func canSplit(_ dragged: UUID) -> Bool {
+        var trial = store.workspace
+        return trial.splitTab(dragged, onto: target) != nil
     }
 
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard let dragged = dragging, dragged != target else { return DropProposal(operation: .move) }
+        let x = info.location.x
+        if x > width * 0.3, x < width * 0.7, canSplit(dragged) {
+            if splitTarget != target { splitTarget = target }
+        } else {
+            if splitTarget == target { splitTarget = nil }
+            let after = x >= width / 2
+            let order = store.orderedTabIds
+            if let from = order.firstIndex(of: dragged), let to = order.firstIndex(of: target),
+               after ? from != to + 1 : from != to - 1 {
+                store.moveTab(dragged, nextTo: target, after: after)
+            }
+        }
+        return DropProposal(operation: .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if splitTarget == target { splitTarget = nil }
+    }
 
     func performDrop(info: DropInfo) -> Bool {
+        if let dragged = dragging, splitTarget == target { onSplit(dragged, target) }
         dragging = nil
+        splitTarget = nil
         return true
     }
 }

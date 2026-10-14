@@ -212,6 +212,63 @@ final class WorkspaceTests: XCTestCase {
         assertValid(store)
     }
 
+    func testDroppingATabOntoAnotherSplitsThenJoins() {
+        let store = makeStore()
+        let a = store.newTab(url: url("a"))
+        let b = store.newTab(url: url("b"))
+        let c = store.newTab(url: url("c"))
+        let split = try! XCTUnwrap(store.splitTab(c, onto: a))
+        XCTAssertEqual(store.workspace.splitGroup(containing: a)?.panes, [a, c])
+        XCTAssertEqual(store.activeSpace.today, [.split(store.workspace.splitGroup(containing: a)!), .tab(b)])
+        XCTAssertEqual(store.activeTabId, c)
+        // Dropping onto a pane joins that split, right after the pane.
+        XCTAssertEqual(store.splitTab(b, onto: a), split)
+        XCTAssertEqual(store.workspace.splitGroup(containing: a)?.panes, [a, b, c])
+        XCTAssertEqual(store.workspace.splitGroup(containing: a)?.ratios.count, 3)
+        XCTAssertNil(store.splitTab(a, onto: a))
+        assertValid(store)
+    }
+
+    func testSplitDropRejectsFavoritesAndFullSplits() {
+        let store = makeStore()
+        let ids = (0..<6).map { store.newTab(url: url("t\($0)")) }
+        store.moveToFavorites(ids[0])
+        XCTAssertNil(store.splitTab(ids[0], onto: ids[1]))
+        XCTAssertNil(store.splitTab(ids[1], onto: ids[0]))
+        _ = store.split(Array(ids[1...4]))
+        XCTAssertNil(store.splitTab(ids[5], onto: ids[1]))
+        assertValid(store)
+    }
+
+    func testMoveTabNextToReordersAndPullsOutOfSplits() {
+        let store = makeStore()
+        let a = store.newTab(url: url("a"))
+        let b = store.newTab(url: url("b"))
+        let c = store.newTab(url: url("c"))
+        store.moveTab(a, nextTo: c, after: true)
+        XCTAssertEqual(store.orderedTabIds, [b, c, a])
+        store.moveTab(a, nextTo: b, after: false)
+        XCTAssertEqual(store.orderedTabIds, [a, b, c])
+        _ = store.split([b, c])
+        store.moveTab(c, nextTo: a, after: false)
+        XCTAssertEqual(store.orderedTabIds, [c, a, b])
+        XCTAssertNil(store.workspace.splitGroup(containing: b))
+        assertValid(store)
+    }
+
+    func testPlacingIntoPinnedRemembersPageAndBackForgets() {
+        let store = makeStore()
+        let a = store.newTab(url: url("a"))
+        let sid = store.activeSpace.id
+        store.place(a, at: NodeLocation(spaceId: sid, section: .pinned, parentFolderId: nil, index: 0))
+        XCTAssertEqual(store.workspace.section(containing: a), .pinned)
+        XCTAssertEqual(store.tab(a)?.savedURL, url("a"))
+        store.place(a, at: NodeLocation(spaceId: sid, section: .today, parentFolderId: nil, index: 0))
+        XCTAssertEqual(store.workspace.section(containing: a), .today)
+        XCTAssertNil(store.tab(a)?.savedURL)
+        assertValid(store)
+    }
+
     func testSplitRatiosNormalize() {
         let store = makeStore()
         let a = store.newTab(url: url("a"))

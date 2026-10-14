@@ -1,5 +1,4 @@
-// Luna — start page site tiles: the user's own shortcuts followed by the
-// sites they visit most (from this profile's history).
+// Luna — start page site tiles: only the shortcuts the user adds.
 import SwiftUI
 import Combine
 
@@ -12,18 +11,14 @@ struct SiteShortcut: Codable, Identifiable, Hashable {
 /// Start page tile settings (Settings → Appearance → Start page).
 enum StartPagePrefs {
     static let showShortcuts = "luna_start_shortcuts_enabled"
-    static let showFrequent = "luna_start_frequent_enabled"
 }
 
-/// User-pinned shortcuts and hidden frequent sites, shared across start pages.
+/// The user's shortcuts, shared across start pages.
 final class ShortcutStore: ObservableObject {
     static let shared = ShortcutStore()
     private static let key = "luna_start_shortcuts"
-    private static let hiddenKey = "luna_start_hidden_hosts"
 
     @Published private(set) var shortcuts: [SiteShortcut]
-    /// Frequently visited hosts the user dismissed from the start page.
-    @Published private(set) var hiddenHosts: Set<String>
 
     private init() {
         if let data = UserDefaults.standard.data(forKey: Self.key),
@@ -32,22 +27,12 @@ final class ShortcutStore: ObservableObject {
         } else {
             shortcuts = []
         }
-        hiddenHosts = Set(UserDefaults.standard.stringArray(forKey: Self.hiddenKey) ?? [])
     }
 
     func add(_ s: SiteShortcut) { shortcuts.append(s); save() }
     func remove(_ id: UUID) { shortcuts.removeAll { $0.id == id }; save() }
     func removeAll() { shortcuts = []; save() }
 
-    func hide(host: String) {
-        hiddenHosts.insert(SiteShortcut.normalizedHost(host))
-        UserDefaults.standard.set(Array(hiddenHosts), forKey: Self.hiddenKey)
-    }
-
-    func unhideAll() {
-        hiddenHosts = []
-        UserDefaults.standard.removeObject(forKey: Self.hiddenKey)
-    }
     func update(_ s: SiteShortcut) {
         guard let i = shortcuts.firstIndex(where: { $0.id == s.id }) else { return }
         shortcuts[i] = s
@@ -56,29 +41,6 @@ final class ShortcutStore: ObservableObject {
 
     private func save() {
         if let data = try? JSONEncoder().encode(shortcuts) { UserDefaults.standard.set(data, forKey: Self.key) }
-    }
-}
-
-extension HistoryManager {
-    /// Most-visited sites over the last 60 days, one per host, recent visits
-    /// weighted higher.
-    func frequentSites(limit: Int, excludingHosts: Set<String>) -> [SiteShortcut] {
-        let cutoff = Date().addingTimeInterval(-60 * 86_400)
-        var scores: [String: (score: Double, url: URL)] = [:]
-        for event in historyEvents where event.type == .pageVisit && event.timestamp > cutoff {
-            guard let raw = event.url, let url = URL(string: raw), let host = url.host?.lowercased(),
-                  !excludingHosts.contains(SiteShortcut.normalizedHost(host)) else { continue }
-            let key = SiteShortcut.normalizedHost(host)
-            let ageDays = Date().timeIntervalSince(event.timestamp) / 86_400
-            let weight = 1 / (1 + ageDays / 14)
-            let home = URL(string: "\(url.scheme ?? "https")://\(host)") ?? url
-            scores[key, default: (0, home)].score += weight
-        }
-        return scores
-            .filter { $0.value.score >= 1.5 }
-            .sorted { $0.value.score > $1.value.score }
-            .prefix(limit)
-            .map { SiteShortcut(title: SiteShortcut.displayName(forHost: $0.key), url: $0.value.url) }
     }
 }
 
@@ -98,12 +60,9 @@ extension SiteShortcut {
 // MARK: - View
 
 struct StartShortcutsRow: View {
-    let history: HistoryManager?
     let onOpen: (URL) -> Void
 
     @ObservedObject private var store = ShortcutStore.shared
-    @AppStorage(StartPagePrefs.showFrequent) private var showFrequent = true
-    @State private var frequent: [SiteShortcut] = []
     @State private var addingShortcut = false
     @State private var editing: SiteShortcut?
 
@@ -111,56 +70,33 @@ struct StartShortcutsRow: View {
 
     var body: some View {
         GeometryReader { geo in
-            // Fit as many tiles as the width allows; pinned ones first.
+            // As many tiles as the width allows, plus the add tile.
             let fit = max(1, Int(geo.size.width / Self.tileWidth))
-            let pinned = Array(store.shortcuts.prefix(fit - 1))
-            let extra = Array(frequent.prefix(max(0, fit - 1 - pinned.count)))
             HStack(spacing: 0) {
-                ForEach(pinned) { s in
-                    tile(s, isPinned: true)
-                }
-                ForEach(extra) { s in
-                    tile(s, isPinned: false)
+                ForEach(store.shortcuts.prefix(fit - 1)) { s in
+                    tile(s)
                 }
                 addTile
             }
             .frame(maxWidth: .infinity)
         }
         .frame(height: 78)
-        .onAppear(perform: refreshFrequent)
-        .onChange(of: store.shortcuts) { _, _ in refreshFrequent() }
-        .onChange(of: store.hiddenHosts) { _, _ in refreshFrequent() }
-        .onChange(of: showFrequent) { _, _ in refreshFrequent() }
     }
 
-    private func refreshFrequent() {
-        guard showFrequent else { frequent = []; return }
-        let pinnedHosts = Set(store.shortcuts.compactMap { $0.url.host.map(SiteShortcut.normalizedHost) })
-        frequent = history?.frequentSites(limit: 8, excludingHosts: pinnedHosts.union(store.hiddenHosts)) ?? []
-    }
-
-    private func dismiss(_ s: SiteShortcut, isPinned: Bool) {
-        withAnimation(.easeOut(duration: 0.15)) {
-            if isPinned { store.remove(s.id) } else if let host = s.url.host { store.hide(host: host) }
-        }
-    }
-
-    private func tile(_ s: SiteShortcut, isPinned: Bool) -> some View {
+    private func tile(_ s: SiteShortcut) -> some View {
         ShortcutTile(title: s.title, help: s.url.host ?? s.url.absoluteString, action: { onOpen(s.url) },
-                     onRemove: { dismiss(s, isPinned: isPinned) },
-                     removeHelp: isPinned ? "Remove shortcut" : "Don't show this site") {
+                     onRemove: { remove(s) }, removeHelp: "Remove shortcut") {
             FaviconView(url: s.url)
                 .scaleEffect(1.15)
         }
         .contextMenu {
-            if isPinned {
-                Button("Edit…") { editing = s }
-                Button("Remove", role: .destructive) { dismiss(s, isPinned: true) }
-            } else {
-                Button("Add to Shortcuts") { store.add(SiteShortcut(title: s.title, url: s.url)) }
-                Button("Don't Show This Site") { dismiss(s, isPinned: false) }
-            }
+            Button("Edit…") { editing = s }
+            Button("Remove", role: .destructive) { remove(s) }
         }
+    }
+
+    private func remove(_ s: SiteShortcut) {
+        withAnimation(.easeOut(duration: 0.15)) { store.remove(s.id) }
     }
 
     private var addTile: some View {

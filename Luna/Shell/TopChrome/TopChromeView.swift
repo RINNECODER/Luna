@@ -5,7 +5,8 @@ struct TopChromeActions {
     var activate: (UUID) -> Void
     var close: (UUID) -> Void
     var newTab: () -> Void
-    var reorder: (Int, Int) -> Void
+    /// Dropped tab, target tab: open them in split view.
+    var split: (UUID, UUID) -> Void
     var submitAddress: () -> Void
     var goHome: () -> Void
     var toggleAI: () -> Void
@@ -141,7 +142,7 @@ struct TopChromeView: View {
             onActivate: actions.activate,
             onClose: actions.close,
             onNewTab: actions.newTab,
-            onReorder: actions.reorder
+            onSplit: actions.split
         )
     }
 

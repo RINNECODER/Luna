@@ -261,6 +261,26 @@ final class WorkspaceStore: ObservableObject {
         return id
     }
 
+    /// Drops one tab onto another to view them side by side.
+    @discardableResult
+    func splitTab(_ tabId: UUID, onto targetId: UUID) -> UUID? {
+        var id: UUID?
+        perform("Split View") { ws in
+            id = ws.splitTab(tabId, onto: targetId)
+            if id != nil { Self.activate(tabId, in: &ws) }
+        }
+        return id
+    }
+
+    /// Drag and drop: moves a tab, folder or split to a spot in the sidebar.
+    func place(_ nodeId: UUID, at location: NodeLocation) {
+        perform("Move") { _ = $0.placeNode(nodeId, at: location) }
+    }
+
+    func moveTab(_ tabId: UUID, nextTo targetId: UUID, after: Bool) {
+        perform("Move") { $0.moveTab(tabId, nextTo: targetId, after: after) }
+    }
+
     func removeFromSplit(_ tabId: UUID) {
         perform("Remove from Split") { _ = $0.detachTabFromAnySplit(tabId) }
     }

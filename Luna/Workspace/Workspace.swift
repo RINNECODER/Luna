@@ -488,6 +488,78 @@ nonisolated struct Workspace: Codable, Equatable {
         return group.id
     }
 
+    /// Adds a tab to an existing split as a new pane (at `index`, default last).
+    /// Returns false when the split is full, missing, or the tab can't be split.
+    @discardableResult
+    mutating func addToSplit(_ tabId: UUID, group groupId: UUID, at index: Int? = nil) -> Bool {
+        guard tabs[tabId] != nil, !isFavorite(tabId),
+              case .split(let g)? = node(withId: groupId), !g.panes.contains(tabId),
+              g.panes.count < SplitGroup.maxPanes else { return false }
+        _ = detachTabFromAnySplit(tabId)
+        _ = detachNode(tabId)
+        updateSplit(groupId) { g in
+            g.panes.insert(tabId, at: Self.clamp(index ?? g.panes.count, g.panes.count))
+            g.ratios = SplitGroup.evenRatios(g.panes.count)
+        }
+        return true
+    }
+
+    /// Drag-and-drop split: drops `tabId` onto `targetId`. Joins the target's
+    /// split if it has one, otherwise makes a new split where the target is,
+    /// with the dropped tab on the right. Returns the split id.
+    @discardableResult
+    mutating func splitTab(_ tabId: UUID, onto targetId: UUID) -> UUID? {
+        guard tabId != targetId, tabs[tabId] != nil, tabs[targetId] != nil,
+              !isFavorite(tabId), !isFavorite(targetId) else { return nil }
+        if let g = splitGroup(containing: targetId) {
+            if g.panes.contains(tabId) { return g.id }
+            let at = (g.panes.firstIndex(of: targetId) ?? g.panes.count - 1) + 1
+            return addToSplit(tabId, group: g.id, at: at) ? g.id : nil
+        }
+        _ = detachTabFromAnySplit(tabId)
+        return createSplit([targetId, tabId])
+    }
+
+    /// Moves a tab right before or after another tab in the sidebar tree
+    /// (into the other tab's folder; next to its split if it has one).
+    /// Favorites reorder within the favorites list.
+    mutating func moveTab(_ tabId: UUID, nextTo targetId: UUID, after: Bool) {
+        guard tabId != targetId, tabs[tabId] != nil, tabs[targetId] != nil else { return }
+        if let fi = favorites.firstIndex(of: targetId) {
+            var index = fi + (after ? 1 : 0)
+            if let current = favorites.firstIndex(of: tabId), current < index { index -= 1 }
+            addToFavorites(tabId, at: index)
+            return
+        }
+        _ = detachTabFromAnySplit(tabId)
+        let anchor = splitGroup(containing: targetId)?.id ?? targetId
+        guard var loc = location(ofNode: anchor) else { return }
+        if after { loc.index += 1 }
+        placeNode(tabId, at: loc)
+    }
+
+    /// Moves any node (tab, folder, split) to a location, keeping pin state in
+    /// step with the section: tabs landing in Pinned remember their page,
+    /// tabs landing in Today forget it. Returns false for illegal moves.
+    @discardableResult
+    mutating func placeNode(_ id: UUID, at loc: NodeLocation) -> Bool {
+        if isFavorite(id) {
+            // A favorite becomes a regular tab where it's dropped.
+            favorites.removeAll { $0 == id }
+            insertNode(.tab(id), at: loc)
+        } else if !moveNode(id, to: loc) {
+            return false
+        }
+        for tabId in node(withId: id)?.tabIds ?? [] {
+            if loc.section == .pinned, tabs[tabId]?.savedURL == nil {
+                let url = tabs[tabId]?.url
+                tabs[tabId]?.savedURL = url
+            }
+            if loc.section == .today { tabs[tabId]?.savedURL = nil }
+        }
+        return true
+    }
+
     /// Replaces a split with its panes as individual tabs, in place.
     mutating func dissolveSplit(_ id: UUID) {
         guard let loc = location(ofNode: id), case .split(let g)? = detachNode(id) else { return }

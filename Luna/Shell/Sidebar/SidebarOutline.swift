@@ -82,6 +82,11 @@ struct SidebarOutline: NSViewRepresentable {
         menu.delegate = coordinator
         outline.menu = menu
         outline.onRowClick = { [weak coordinator] row in coordinator?.rowClicked(row) }
+        // Drag to reorder (rows part to make room), into folders, or onto
+        // another tab to open both in split view.
+        outline.registerForDraggedTypes([LunaDrag.tabType])
+        outline.setDraggingSourceOperationMask(.move, forLocal: true)
+        outline.draggingDestinationFeedbackStyle = .gap
 
         let scroll = NSScrollView()
         scroll.documentView = outline
@@ -342,6 +347,96 @@ struct SidebarOutline: NSViewRepresentable {
             DispatchQueue.main.async { [actions] in actions.store.setFolderExpanded(f.id, expanded) }
         }
 
+        // MARK: Drag and drop
+
+        enum DropAction: Equatable {
+            case place(NodeLocation)
+            /// Open the dragged tab beside this tab (or in its split).
+            case split(onto: UUID)
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> NSPasteboardWriting? {
+            guard let node = (item as? Item)?.node else { return nil }
+            let pb = NSPasteboardItem()
+            pb.setString(node.id.uuidString, forType: LunaDrag.tabType)
+            return pb
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, validateDrop info: NSDraggingInfo,
+                         proposedItem item: Any?, proposedChildIndex index: Int) -> NSDragOperation {
+            guard let dragged = Self.draggedId(info),
+                  let action = dropAction(for: dragged, item: item as? Item, index: index) else { return [] }
+            if case .place(let loc) = action, loc.parentFolderId == nil, index == NSOutlineViewDropOnItemIndex {
+                // Dropping on a divider/New Tab row: show it as a gap at the spot instead.
+                outlineView.setDropItem(nil, dropChildIndex: rootIndex(for: loc))
+            }
+            return .move
+        }
+
+        func outlineView(_ outlineView: NSOutlineView, acceptDrop info: NSDraggingInfo,
+                         item: Any?, childIndex index: Int) -> Bool {
+            guard let dragged = Self.draggedId(info),
+                  let action = dropAction(for: dragged, item: item as? Item, index: index) else { return false }
+            switch action {
+            case .place(let loc):
+                actions.store.place(dragged, at: loc)
+            case .split(let target):
+                guard actions.store.splitTab(dragged, onto: target) != nil else { return false }
+                actions.activate(dragged)
+            }
+            return true
+        }
+
+        static func draggedId(_ info: NSDraggingInfo) -> UUID? {
+            info.draggingPasteboard.string(forType: LunaDrag.tabType).flatMap(UUID.init(uuidString:))
+        }
+
+        /// What dropping `dragged` at the proposed spot would do (nil = not allowed).
+        func dropAction(for dragged: UUID, item: Item?, index: Int) -> DropAction? {
+            let ws = actions.store.workspace
+            let space = ws.activeSpace
+            let draggedIsTab = ws.tabs[dragged] != nil
+            let action: DropAction
+            if index == NSOutlineViewDropOnItemIndex {
+                guard let item else { return nil }
+                switch item.kind {
+                case .divider, .newTab:
+                    action = .place(NodeLocation(spaceId: space.id, section: .today, parentFolderId: nil, index: 0))
+                case .node(.tab(let target)):
+                    guard draggedIsTab, target != dragged else { return nil }
+                    action = .split(onto: target)
+                case .node(.split(let g)):
+                    guard draggedIsTab, !g.panes.contains(dragged), g.panes.count < SplitGroup.maxPanes else { return nil }
+                    action = .split(onto: g.panes[g.panes.count - 1])
+                case .node(.folder(let f)):
+                    guard let loc = ws.location(ofNode: f.id) else { return nil }
+                    action = .place(NodeLocation(spaceId: loc.spaceId, section: loc.section, parentFolderId: f.id, index: f.children.count))
+                }
+            } else if let item {
+                guard case .folder(let f)? = item.node, let loc = ws.location(ofNode: f.id) else { return nil }
+                action = .place(NodeLocation(spaceId: loc.spaceId, section: loc.section, parentFolderId: f.id, index: index))
+            } else {
+                // Root list: pinned rows, then the divider and New Tab rows, then Today.
+                let pinned = space.pinned.count
+                if index <= pinned {
+                    action = .place(NodeLocation(spaceId: space.id, section: .pinned, parentFolderId: nil, index: index))
+                } else {
+                    action = .place(NodeLocation(spaceId: space.id, section: .today, parentFolderId: nil, index: max(0, index - pinned - 2)))
+                }
+            }
+            // Reject moves the model refuses (e.g. a folder into itself).
+            var trial = ws
+            switch action {
+            case .place(let loc): return trial.placeNode(dragged, at: loc) ? action : nil
+            case .split(let t): return trial.splitTab(dragged, onto: t) != nil ? action : nil
+            }
+        }
+
+        private func rootIndex(for loc: NodeLocation) -> Int {
+            guard let snapshot else { return 0 }
+            return loc.section == .pinned ? loc.index : snapshot.space.pinned.count + 2 + loc.index
+        }
+
         // MARK: Cells
 
         private func configure(_ cell: SidebarCell, for item: Item) {
@@ -390,6 +485,11 @@ struct SidebarOutline: NSViewRepresentable {
                     menu.addItem(MenuAction("Pin Tab") { store.pin(id) })
                 }
                 menu.addItem(MenuAction("Add to Favorites") { store.moveToFavorites(id) })
+                if let active = snapshot.activeTabId, active != id, !store.workspace.isFavorite(active) {
+                    menu.addItem(MenuAction("Open in Split View with Current Tab") { [actions] in
+                        if store.splitTab(id, onto: active) != nil { actions.activate(id) }
+                    })
+                }
                 if let loc = store.workspace.location(ofNode: id) {
                     menu.addItem(MenuAction("New Folder with Tab") {
                         store.createFolder(containing: [id], at: loc)
@@ -431,12 +531,23 @@ struct SidebarOutline: NSViewRepresentable {
                 menu.addItem(MenuAction("Ungroup") { store.ungroupFolder(f.id) })
             case .split(let g):
                 menu.addItem(MenuAction("Separate Split View") { store.dissolveSplit(g.id) })
+                if let active = snapshot.activeTabId, !g.panes.contains(active), g.panes.count < SplitGroup.maxPanes,
+                   !store.workspace.isFavorite(active) {
+                    menu.addItem(MenuAction("Add Current Tab to Split") { [actions] in
+                        if store.splitTab(active, onto: g.panes[g.panes.count - 1]) != nil { actions.activate(active) }
+                    })
+                }
             }
         }
     }
 }
 
 // MARK: - AppKit pieces
+
+/// Pasteboard type for dragging tabs, folders and splits inside Luna.
+enum LunaDrag {
+    static let tabType = NSPasteboard.PasteboardType("com.luna.browser.node")
+}
 
 /// Outline view that reports single clicks (for rows that can't be selected).
 final class SidebarOutlineView: NSOutlineView {
@@ -531,7 +642,7 @@ final class SidebarCell: NSTableCellView {
 }
 
 /// Hosting view that never takes clicks, so the outline handles selection,
-/// context menus and (later) drag and drop.
+/// context menus and drag and drop.
 final class PassthroughHostingView: NSHostingView<AnyView> {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

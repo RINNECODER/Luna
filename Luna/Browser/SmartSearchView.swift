@@ -12,20 +12,6 @@ private enum SearchViewState: Equatable {
     case searching
 }
 
-// MARK: - Design tokens (matches start page / side panel glassmorphism)
-
-private enum SmartTokens {
-    static let textPrimary   = Color(white: 0.94)
-    static let textSecondary = Color(white: 0.62)
-    static let textTertiary  = Color(white: 0.50)
-    static let accent        = Color(red: 0.45, green: 0.58, blue: 0.72)
-    static let errorText     = Color(red: 0.95, green: 0.55, blue: 0.55)
-    static let surfaceElevated = Color(white: 0.14)
-    static let cornerRadius: CGFloat  = 14
-    static let barMaxWidth: CGFloat   = 680
-    static let chatMaxWidth: CGFloat  = 720
-}
-
 // MARK: - SmartSearchView
 
 struct SmartSearchView: View {
@@ -35,7 +21,6 @@ struct SmartSearchView: View {
     let webViewWrapper: WebViewWrapper
     var tabId: UUID?
     @Binding var messages: [ChatMessage]
-    var historyManager: HistoryManager? = nil
     let onNavigate: (URL) -> Void
 
     @AppStorage("luma_ai_provider")    private var aiProviderRaw: String = AIProvider.gemini.rawValue
@@ -180,7 +165,7 @@ struct SmartSearchView: View {
                 }
                 // Quiet greeting above the bar (Siri / ChatGPT-app style)
                 Text(Self.greeting())
-                    .font(.system(size: 28, weight: .semibold, design: .rounded))
+                    .font(LunaType.brand(size: 30))
                     .foregroundStyle(
                         LinearGradient(
                             colors: [Color.white.opacity(0.95), Color.white.opacity(0.6)],
@@ -210,16 +195,16 @@ struct SmartSearchView: View {
                             }
                         }
                     }
-                    .frame(maxWidth: SmartTokens.barMaxWidth)
+                    .frame(maxWidth: ChatTokens.barMaxWidth)
                     .padding(.bottom, 8)
                 }
 
                 unifiedSearchCard
-                    .frame(maxWidth: SmartTokens.barMaxWidth)
+                    .frame(maxWidth: ChatTokens.barMaxWidth)
 
                 if inputText.isEmpty && showShortcuts {
-                    StartShortcutsRow(history: historyManager, onOpen: onNavigate)
-                        .frame(maxWidth: SmartTokens.barMaxWidth)
+                    StartShortcutsRow(onOpen: onNavigate)
+                        .frame(maxWidth: ChatTokens.barMaxWidth)
                         .padding(.top, 28)
                         .transition(.opacity)
                 }
@@ -251,21 +236,21 @@ struct SmartSearchView: View {
         HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(SmartTokens.textTertiary)
+                .foregroundColor(ChatTokens.textTertiary)
             TextField("Find in conversation\u{2026}", text: $findQuery)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
-                .foregroundColor(SmartTokens.textPrimary)
+                .foregroundColor(ChatTokens.textPrimary)
                 .focused($isFindFocused)
                 .onSubmit { scrollToNextMatch() }
             Text(findMatchSummary)
                 .font(.system(size: 11))
-                .foregroundColor(SmartTokens.textTertiary)
+                .foregroundColor(ChatTokens.textTertiary)
                 .layoutPriority(1)
             Button(action: { scrollToNextMatch() }) {
                 Image(systemName: "chevron.down")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(SmartTokens.textSecondary)
+                    .foregroundColor(ChatTokens.textSecondary)
                     .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
             }
@@ -273,7 +258,7 @@ struct SmartSearchView: View {
             Button(action: closeFindBar) {
                 Image(systemName: "xmark")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(SmartTokens.textSecondary)
+                    .foregroundColor(ChatTokens.textSecondary)
                     .frame(width: 20, height: 20)
                     .contentShape(Rectangle())
             }
@@ -337,7 +322,7 @@ struct SmartSearchView: View {
                     ForEach(Array(messages.enumerated()), id: \.element.id) { index, msg in
                         let isMatch = !findQuery.isEmpty &&
                             msg.text.lowercased().contains(findQuery.lowercased())
-                        SmartChatBubble(
+                        LunaChatBubble(
                             message: msg,
                             isUser: msg.role == .user,
                             fontSize: fontSize,
@@ -346,11 +331,11 @@ struct SmartSearchView: View {
                             onLinkTapped: { url in openLinkInNewTab(url) }
                         )
                         .id(msg.id)
-                        .frame(maxWidth: SmartTokens.chatMaxWidth,
+                        .frame(maxWidth: ChatTokens.chatMaxWidth,
                                alignment: msg.role == .user ? .trailing : .leading)
                         .overlay(
                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(SmartTokens.accent.opacity(isMatch ? 0.6 : 0), lineWidth: 1.5)
+                                .stroke(ChatTokens.accent.opacity(isMatch ? 0.6 : 0), lineWidth: 1.5)
                                 .padding(-4)
                         )
                         .animation(.easeInOut(duration: 0.2), value: isMatch)
@@ -358,7 +343,7 @@ struct SmartSearchView: View {
                     if isThinking || isSending { thinkingStepsView }
                     if let err = errorMessage { errorBanner(err) }
                 }
-                .frame(maxWidth: SmartTokens.chatMaxWidth)
+                .frame(maxWidth: ChatTokens.chatMaxWidth)
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 32)
                 .padding(.vertical, 20)
@@ -384,22 +369,8 @@ struct SmartSearchView: View {
     private var thinkingStepsView: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(thinkingSteps) { step in
-                HStack(spacing: 8) {
-                    if step.isComplete {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(SmartTokens.accent.opacity(0.7))
-                    } else {
-                        Circle()
-                            .fill(SmartTokens.accent)
-                            .frame(width: 6, height: 6)
-                            .modifier(PulseAnimation())
-                    }
-                    Text(step.text)
-                        .font(.system(size: fontSize - 1))
-                        .foregroundColor(Color.white.opacity(step.isComplete ? 0.4 : 0.6))
-                }
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                ChatThinkingRow(text: step.text, isComplete: step.isComplete, fontSize: fontSize)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
             if isSending && thinkingSteps.allSatisfy({ $0.isComplete }) {
@@ -411,25 +382,13 @@ struct SmartSearchView: View {
                 .transition(.opacity)
             }
         }
-        .frame(maxWidth: SmartTokens.chatMaxWidth, alignment: .leading)
+        .frame(maxWidth: ChatTokens.chatMaxWidth, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .animation(.easeInOut(duration: 0.25), value: thinkingSteps.count)
     }
 
     private func errorBanner(_ message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 12))
-                .foregroundColor(SmartTokens.errorText)
-            Text(message)
-                .font(.system(size: fontSize))
-                .foregroundColor(SmartTokens.errorText)
-                .lineLimit(3)
-        }
-        .padding(12)
-        .frame(maxWidth: SmartTokens.chatMaxWidth, alignment: .leading)
-        .background(SmartTokens.errorText.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: SmartTokens.cornerRadius, style: .continuous))
+        ChatErrorBanner(message: message, fontSize: fontSize)
     }
 
     /// "+" popover: toggle open tabs as context, or choose files.
@@ -483,21 +442,12 @@ struct SmartSearchView: View {
                     .padding(.horizontal, 14)
                 }
                 .frame(height: 32)
-                .frame(maxWidth: SmartTokens.chatMaxWidth)
+                .frame(maxWidth: ChatTokens.chatMaxWidth)
                 .padding(.bottom, 6)
             }
 
             HStack(alignment: .bottom, spacing: 0) {
-                Button { addContextFromChat.toggle() } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(SmartTokens.textSecondary)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(Color.white.opacity(addContextFromChat ? 0.12 : 0)))
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("Add tabs or files")
+                ChatAddContextButton(isActive: addContextFromChat) { addContextFromChat.toggle() }
                 .popover(isPresented: $addContextFromChat, arrowEdge: .top) { addContextPopover(dismiss: { addContextFromChat = false }) }
                 .padding(.bottom, 3)
 
@@ -517,33 +467,16 @@ struct SmartSearchView: View {
                 )
                 .frame(maxWidth: .infinity)
 
-                if isSending {
-                    Button(action: stopGenerating) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(Color.white.opacity(0.8))
-                            .frame(width: 28, height: 36)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Button(action: sendChatMessage) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(inputText.isEmpty
-                                             ? Color.white.opacity(0.3)
-                                             : Color.white.opacity(0.9))
-                            .frame(width: 28, height: 36)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(inputText.isEmpty)
-                    .keyboardShortcut(.return, modifiers: [])
-                }
+                ChatSendStopButton(
+                    isSending: isSending,
+                    canSend: !inputText.isEmpty,
+                    onSend: sendChatMessage,
+                    onStop: stopGenerating
+                )
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .frame(maxWidth: SmartTokens.chatMaxWidth)
+            .frame(maxWidth: ChatTokens.chatMaxWidth)
             .lunaGlass(cornerRadius: 22, interactive: true)
             .focusShadow(isInputFocused)
         }
@@ -567,14 +500,14 @@ struct SmartSearchView: View {
                             .hidden()
                     )
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(SmartTokens.textTertiary)
+                    .foregroundColor(ChatTokens.textTertiary)
                     .frame(width: 20)
                     .animation(.easeInOut(duration: 0.15), value: currentIntent)
 
                 TextField("Ask anything\u{2026}", text: $inputText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
-                    .foregroundColor(SmartTokens.textPrimary)
+                    .foregroundColor(ChatTokens.textPrimary)
                     .focused($isInputFocused)
                     .onSubmit { submitWithSelection() }
                     .onChange(of: inputText) { _, newValue in
@@ -612,7 +545,7 @@ struct SmartSearchView: View {
                         Text("Add tabs or files")
                             .font(.system(size: 12, weight: .medium))
                     }
-                    .foregroundColor(SmartTokens.textSecondary)
+                    .foregroundColor(ChatTokens.textSecondary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(Capsule(style: .continuous).fill(Color.white.opacity(addContextFromCard ? 0.1 : 0)))
@@ -712,17 +645,17 @@ struct SmartSearchView: View {
                     HStack(spacing: 10) {
                         Image(systemName: row.icon)
                             .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(SmartTokens.textTertiary)
+                            .foregroundColor(ChatTokens.textTertiary)
                             .frame(width: 18)
                         Text(row.label)
                             .font(.system(size: 14))
-                            .foregroundColor(SmartTokens.textPrimary)
+                            .foregroundColor(ChatTokens.textPrimary)
                             .lineLimit(1)
                         if let suffix = row.suffix {
                             Spacer()
                             Text("— \(suffix)")
                                 .font(.system(size: 12))
-                                .foregroundColor(SmartTokens.textTertiary)
+                                .foregroundColor(ChatTokens.textTertiary)
                         } else {
                             Spacer()
                         }
@@ -1441,155 +1374,6 @@ private struct SmartThinkingStep: Identifiable {
     let id = UUID()
     let text: String
     var isComplete: Bool = false
-}
-
-private struct PulseAnimation: ViewModifier {
-    @State private var scale: CGFloat = 0.85
-
-    func body(content: Content) -> some View {
-        content
-            .scaleEffect(scale)
-            .onAppear {
-                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
-                    scale = 1.15
-                }
-            }
-    }
-}
-
-// MARK: - Self-contained chat bubble with retry / edit
-
-private struct SmartChatBubble: View {
-    let message: ChatMessage
-    let isUser: Bool
-    let fontSize: CGFloat
-    var onRetry: (() -> Void)?
-    var onEdit: (() -> Void)?
-    var onLinkTapped: ((URL) -> Void)?
-
-    private let userBubbleColor = Color.white.opacity(0.15)
-    private let linkColor = Color(red: 0.4, green: 0.6, blue: 1.0)
-    @State private var isHovered: Bool = false
-
-    var body: some View {
-        VStack(alignment: isUser ? .trailing : .leading, spacing: 4) {
-            HStack(alignment: .top, spacing: 0) {
-                if isUser { Spacer(minLength: 48) }
-                bubbleContent
-                if !isUser { Spacer(minLength: 48) }
-            }
-            actionRow
-        }
-    }
-
-    @ViewBuilder
-    private var bubbleContent: some View {
-        if isUser {
-            HStack(alignment: .bottom, spacing: 6) {
-                if isHovered, let onEdit = onEdit {
-                    Button(action: onEdit) {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(Color.white.opacity(0.5))
-                            .frame(width: 20, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .transition(.opacity)
-                }
-                userTextView
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(userBubbleColor)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .onHover { hovering in
-                withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
-            }
-        } else {
-            RichMessageView(
-                rawText: message.text,
-                fontSize: fontSize,
-                linkColor: linkColor,
-                onLinkTapped: onLinkTapped
-            )
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    @State private var showCopied: Bool = false
-
-    @ViewBuilder
-    private var actionRow: some View {
-        if !isUser {
-            HStack(spacing: 4) {
-                if let onRetry = onRetry {
-                    Button(action: onRetry) {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(Color.white.opacity(isHovered ? 0.6 : 0.35))
-                            .frame(width: 24, height: 20)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Button(action: copyToClipboard) {
-                    Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color.white.opacity(showCopied ? 0.7 : (isHovered ? 0.6 : 0.35)))
-                        .frame(width: 24, height: 20)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-            }
-            .onHover { hovering in
-                withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
-            }
-        }
-    }
-
-    private func copyToClipboard() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(message.text, forType: .string)
-        withAnimation(.easeOut(duration: 0.15)) { showCopied = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-            withAnimation(.easeOut(duration: 0.15)) { showCopied = false }
-        }
-    }
-
-    private var userTextView: some View {
-        Group {
-            if let attr = userMarkdown {
-                Text(attr)
-            } else {
-                Text(message.text)
-            }
-        }
-        .font(.system(size: fontSize))
-        .foregroundColor(Color.white.opacity(0.95))
-        .textSelection(.enabled)
-        .multilineTextAlignment(.leading)
-        .lineSpacing(5)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var userMarkdown: AttributedString? {
-        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
-        guard var attributed = try? AttributedString(markdown: message.text, options: options, baseURL: nil) else {
-            return try? AttributedString(markdown: message.text)
-        }
-        for run in attributed.runs {
-            if run.link != nil {
-                attributed[run.range].foregroundColor = linkColor
-                attributed[run.range].underlineStyle = .single
-            }
-        }
-        return attributed
-    }
 }
 
 // MARK: - Context chip

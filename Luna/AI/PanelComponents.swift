@@ -1,47 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// Shared pieces for the AI panel and the AI start page, styled after the
-// Desktop LUNA sidebar / Siri app: floating glass, a calm orb, capsule
-// context chips, and a capsule composer with a soft shadow.
-
-// MARK: - Orb
-
-/// Siri-style orb for empty states only: a slowly turning, softly blurred
-/// gradient. Respects Reduce Motion.
-struct LunaOrb: View {
-    var size: CGFloat = 52
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var turning = false
-
-    private static let colors: [Color] = [
-        Color(red: 0.91, green: 0.76, blue: 0.45),
-        Color(red: 0.43, green: 0.71, blue: 0.97),
-        Color(red: 0.69, green: 0.55, blue: 0.97),
-        Color(red: 0.97, green: 0.62, blue: 0.43),
-        Color(red: 0.91, green: 0.76, blue: 0.45),
-    ]
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(AngularGradient(colors: Self.colors, center: .center))
-                .blur(radius: size * 0.18)
-                .rotationEffect(.degrees(turning ? 360 : 0))
-                .scaleEffect(turning ? 1.06 : 0.97)
-            Circle()
-                .fill(.white.opacity(0.18))
-                .frame(width: size * 0.42, height: size * 0.42)
-                .blur(radius: size * 0.12)
-        }
-        .frame(width: size, height: size)
-        .onAppear {
-            guard !reduceMotion else { return }
-            withAnimation(.linear(duration: 9).repeatForever(autoreverses: false)) { turning = true }
-        }
-        .accessibilityHidden(true)
-    }
-}
+// Shared pieces for the AI panel and the AI start page: header buttons,
+// capsule context chips, and the add-context popover. Chat styling lives
+// in ChatStyle.swift.
 
 // MARK: - Buttons
 
@@ -65,31 +27,6 @@ struct PanelIconButton: View {
         .onHover { hovering = $0 }
         .help(help)
         .accessibilityLabel(help)
-    }
-}
-
-/// Round send / stop button for the composer.
-struct ComposerSendButton: View {
-    let isSending: Bool
-    let canSend: Bool
-    let onSend: () -> Void
-    let onStop: () -> Void
-
-    var body: some View {
-        Button(action: isSending ? onStop : onSend) {
-            Image(systemName: isSending ? "stop.fill" : "arrow.up")
-                .font(.system(size: isSending ? 10 : 13, weight: .bold))
-                .foregroundStyle(canSend || isSending ? Color.white : Color.secondary)
-                .frame(width: 28, height: 28)
-                .background(Circle().fill(canSend || isSending ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary)))
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!canSend && !isSending)
-        .keyboardShortcut(isSending ? .cancelAction : .defaultAction)
-        .help(isSending ? "Stop" : "Send (↩)")
-        .accessibilityLabel(isSending ? "Stop generating" : "Send message")
-        .animation(.easeOut(duration: 0.15), value: canSend)
     }
 }
 
@@ -308,17 +245,5 @@ struct FileDropHint: View {
             }
             .padding(10)
             .allowsHitTesting(false)
-    }
-}
-
-// MARK: - User bubble
-
-/// iMessage-style bubble: rounded with a tighter bottom-trailing corner.
-struct UserBubbleShape: Shape {
-    func path(in rect: CGRect) -> Path {
-        UnevenRoundedRectangle(
-            topLeadingRadius: 17, bottomLeadingRadius: 17, bottomTrailingRadius: 5, topTrailingRadius: 17,
-            style: .continuous
-        ).path(in: rect)
     }
 }

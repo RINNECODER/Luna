@@ -21,6 +21,8 @@ struct CommandSurfaceView: View {
     let onActionProposed: (LLMResponse) -> Void
     
     var tabId: UUID? = nil
+    /// Other panes of this tab's split view: always part of the context.
+    var splitPeers: [UUID] = []
 
     @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSizeRaw: Int = 13
     @AppStorage("luma_ai_provider") private var aiProviderRaw: String = AIProvider.gemini.rawValue
@@ -67,18 +69,12 @@ struct CommandSurfaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             panelHeader()
-            Divider().opacity(0.5).padding(.horizontal, 14)
             conversationStream()
             inputArea()
         }
-        // Floating glass panel (Desktop LUNA / Siri style).
-        .background {
-            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.clear)
-                .lunaGlass(cornerRadius: 22)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.separator.opacity(0.5), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
+        // No surface of its own: the panel sits on the window chrome, like the
+        // sidebar, so the browser, the page and the panel read as one piece.
+        .environment(\.colorScheme, .dark)
         .overlay { if isDropTargeted { FileDropHint() } }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDocumentDrop(providers: providers)
@@ -88,7 +84,9 @@ struct CommandSurfaceView: View {
         .onAppear {
             restoreConversationSummary()
             loadPageContext()
+            includeSplitPeers()
         }
+        .onChange(of: splitPeers) { _, _ in includeSplitPeers() }
         // Parent can remove the panel (tab switch / close) without calling close();
         // cancel the stream so orphaned tasks don't keep mutating state.
         .onDisappear {
@@ -122,7 +120,7 @@ struct CommandSurfaceView: View {
             Spacer(minLength: 0)
             VStack(spacing: 1) {
                 Text("Luna")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(LunaType.brand(size: 15))
                 Text(modelLabel)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
@@ -172,15 +170,19 @@ struct CommandSurfaceView: View {
     private func conversationStream() -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 20) {
                     if messages.isEmpty {
                         emptyConversationState()
                     } else {
                         ForEach(messages) { msg in
-                            ChatBubble(message: msg, isUser: msg.role == .user, fontSize: chatFontSize) { url in
-                                openLinkInNewTab(url)
-                            }
-                            .frame(maxWidth: 720, alignment: msg.role == .user ? .trailing : .leading)
+                            LunaChatBubble(
+                                message: msg,
+                                isUser: msg.role == .user,
+                                fontSize: chatFontSize,
+                                onLinkTapped: { url in openLinkInNewTab(url) }
+                            )
+                            .id(msg.id)
+                            .frame(maxWidth: ChatTokens.chatMaxWidth, alignment: msg.role == .user ? .trailing : .leading)
                         }
                         if isSending {
                             loadingIndicator()
@@ -207,15 +209,21 @@ struct CommandSurfaceView: View {
         .accessibilityLabel("Conversation")
     }
 
+    /// Mirrors the start page: the moon, a quiet title, and capsule suggestions.
     private func emptyConversationState() -> some View {
-        VStack(spacing: 14) {
-            LunaOrb(size: 52)
-                .padding(.bottom, 4)
+        VStack(spacing: 0) {
+            AsciiMoon(diameter: 92, isBusy: isSending)
+                .padding(.bottom, 2)
             Text("Ask about this page")
-                .font(.system(size: 15, weight: .semibold))
+                .font(LunaType.brand(size: 22))
+                .foregroundStyle(
+                    LinearGradient(colors: [Color.white.opacity(0.95), Color.white.opacity(0.6)],
+                                   startPoint: .top, endPoint: .bottom)
+                )
+                .padding(.bottom, 8)
             Text("Summarize, explain, or find anything, with this page and any tabs or files you add as context.")
                 .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+                .foregroundColor(ChatTokens.textTertiary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 250)
             VStack(spacing: 6) {
@@ -225,43 +233,32 @@ struct CommandSurfaceView: View {
                         sendCommand()
                     } label: {
                         Text(suggestion)
-                            .font(.system(size: 12))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(ChatTokens.textSecondary)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
-                            .background(Capsule().fill(.quaternary.opacity(0.7)))
-                            .overlay(Capsule().strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+                            .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+                            .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.top, 6)
+            .padding(.top, 18)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 48)
+        .padding(.vertical, 36)
         .accessibilityElement(children: .contain)
     }
 
     private func loadingIndicator() -> some View {
-        ThinkingLabel(fontSize: chatFontSize)
+        ChatThinkingRow(text: "Thinking\u{2026}", fontSize: chatFontSize)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel("Assistant is thinking")
     }
 
     private func errorInlineView(message: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 12))
-                .foregroundColor(Color.red)
-            Text(message)
-                .font(.system(size: chatFontSize))
-                .foregroundColor(Color.red)
-                .lineLimit(3)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .accessibilityLabel("Error: \(message)")
+        ChatErrorBanner(message: message, fontSize: chatFontSize)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Input area
@@ -305,17 +302,7 @@ struct CommandSurfaceView: View {
             }
 
             HStack(alignment: .bottom, spacing: 4) {
-                Button { addContextPresented.toggle() } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(.quaternary.opacity(addContextPresented ? 1 : 0)))
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .help("Add tabs or files")
-                .accessibilityLabel("Add context")
+                ChatAddContextButton(isActive: addContextPresented) { addContextPresented.toggle() }
                 .popover(isPresented: $addContextPresented, arrowEdge: .top) {
                     AddContextPopover(
                         tabs: otherTabItems,
@@ -340,19 +327,16 @@ struct CommandSurfaceView: View {
                 )
                 .frame(maxWidth: .infinity)
 
-                ComposerSendButton(
+                ChatSendStopButton(
                     isSending: isSending,
                     canSend: !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     onSend: sendCommand,
                     onStop: stopStreaming
                 )
-                .padding(.bottom, 4)
             }
-            .padding(.leading, 6)
-            .padding(.trailing, 6)
-            .padding(.vertical, 2)
-            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.background.opacity(0.55)))
-            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .lunaGlass(cornerRadius: 22, interactive: true)
             .focusShadow(isInputFocused)
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Message input")
@@ -372,101 +356,20 @@ struct CommandSurfaceView: View {
         }
     }
 
+    /// Split view: every pane's page is context, alongside this one.
+    private func includeSplitPeers() {
+        for id in splitPeers where !includedOtherTabIds.contains(id) {
+            includedOtherTabIds.append(id)
+            loadTabContext(for: id)
+        }
+    }
+
     private func toggleIncludedTab(_ id: UUID) {
         if includedOtherTabIds.contains(id) {
             removeIncludedOtherTab(id: id)
         } else {
             includedOtherTabIds.append(id)
             loadTabContext(for: id)
-        }
-    }
-
-    private struct ChatBubble: View {
-        let message: ChatMessage
-        let isUser: Bool
-        let fontSize: CGFloat
-        let onLinkTapped: (URL) -> Void
-
-        private var linkColor: Color { isUser ? .white : .accentColor }
-
-        var body: some View {
-            HStack(alignment: .top, spacing: 0) {
-                if isUser { Spacer(minLength: 32) }
-                if isUser {
-                    messageTextView
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(UserBubbleShape().fill(Color.accentColor))
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    messageTextView
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if !isUser { Spacer(minLength: 32) }
-            }
-            .fixedSize(horizontal: false, vertical: true)
-        }
-
-        private func styledAttributedString(for string: String) -> AttributedString? {
-            let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
-            guard var attributed = try? AttributedString(markdown: string, options: options, baseURL: nil) else {
-                guard var fallback = try? AttributedString(markdown: string) else { return nil }
-                for run in fallback.runs {
-                    if run.link != nil {
-                        let range = run.range
-                        fallback[range].foregroundColor = linkColor
-                        fallback[range].underlineStyle = .single
-                    }
-                }
-                return fallback
-            }
-            for run in attributed.runs {
-                if run.link != nil {
-                    let range = run.range
-                    attributed[range].foregroundColor = linkColor
-                    attributed[range].underlineStyle = .single
-                }
-            }
-            return attributed
-        }
-
-        @ViewBuilder
-        private var messageTextView: some View {
-            if isUser {
-                singleBlockMessageView
-            } else {
-                RichMessageView(
-                    rawText: message.text,
-                    fontSize: fontSize,
-                    linkColor: linkColor,
-                    onLinkTapped: onLinkTapped
-                )
-            }
-        }
-
-        @ViewBuilder
-        private var singleBlockMessageView: some View {
-            Group {
-                if let attributed = styledAttributedString(for: message.text) {
-                    Text(attributed)
-                } else {
-                    Text(message.text)
-                }
-            }
-            .font(.system(size: fontSize))
-            .foregroundStyle(.white)
-            .textSelection(.enabled)
-            .multilineTextAlignment(.leading)
-            .lineSpacing(5)
-            .fixedSize(horizontal: false, vertical: true)
-            .environment(\.openURL, OpenURLAction { url in
-                onLinkTapped(url)
-                return .handled
-            })
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("You: \(message.text)")
         }
     }
 
@@ -1004,32 +907,5 @@ private enum DocumentTextExtractor {
 
     nonisolated static func isSupported(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
-    }
-}
-
-// MARK: - Thinking label
-
-/// "Thinking…" with a soft shimmer in the secondary text color.
-private struct ThinkingLabel: View {
-    let fontSize: CGFloat
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var phase: CGFloat = -1
-
-    var body: some View {
-        Text("Thinking…")
-            .font(.system(size: fontSize))
-            .foregroundStyle(.tertiary)
-            .overlay {
-                GeometryReader { geo in
-                    LinearGradient(colors: [.clear, .primary.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing)
-                        .frame(width: geo.size.width * 0.6)
-                        .offset(x: phase * geo.size.width)
-                }
-                .mask(Text("Thinking…").font(.system(size: fontSize)))
-            }
-            .onAppear {
-                guard !reduceMotion else { return }
-                withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) { phase = 1.2 }
-            }
     }
 }

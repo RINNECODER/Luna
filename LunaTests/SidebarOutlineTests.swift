@@ -104,6 +104,29 @@ final class SidebarOutlineTests: XCTestCase {
         XCTAssertEqual(store.activeTabId, b)
     }
 
+    func testDropRulesForReorderFoldersAndSplits() {
+        let p = store.newTab(url: url("p"))
+        store.pin(p)
+        let a = store.newTab(url: url("a"))
+        let b = store.newTab(url: url("b"))
+        let sid = store.activeSpace.id
+        let folder = store.createFolder(name: "F", containing: [b], at: NodeLocation(spaceId: sid, section: .today, parentFolderId: nil, index: 1))
+        refresh()
+        let item = { (id: UUID) in self.outline.item(atRow: self.row(of: id)) as? SidebarOutline.Item }
+
+        // Root index past pinned + divider + New Tab maps into Today.
+        XCTAssertEqual(coordinator.dropAction(for: a, item: nil, index: 0),
+                       .place(NodeLocation(spaceId: sid, section: .pinned, parentFolderId: nil, index: 0)))
+        XCTAssertEqual(coordinator.dropAction(for: p, item: nil, index: 4),
+                       .place(NodeLocation(spaceId: sid, section: .today, parentFolderId: nil, index: 1)))
+        // Onto a tab: split. Onto a folder: into it. A folder can't go into itself.
+        XCTAssertEqual(coordinator.dropAction(for: a, item: item(p), index: NSOutlineViewDropOnItemIndex), .split(onto: p))
+        XCTAssertEqual(coordinator.dropAction(for: a, item: item(folder), index: NSOutlineViewDropOnItemIndex),
+                       .place(NodeLocation(spaceId: sid, section: .today, parentFolderId: folder, index: 1)))
+        XCTAssertNil(coordinator.dropAction(for: folder, item: item(folder), index: 0))
+        XCTAssertNil(coordinator.dropAction(for: a, item: item(a), index: NSOutlineViewDropOnItemIndex))
+    }
+
     func testSplitRowActivatesFocusedOrFirstPane() {
         let a = store.newTab(url: url("a"))
         let b = store.newTab(url: url("b"))
