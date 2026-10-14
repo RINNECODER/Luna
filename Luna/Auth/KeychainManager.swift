@@ -12,7 +12,8 @@ final class KeychainManager {
     
     static let shared = KeychainManager()
     
-    private let service = "com.luma.browser"
+    static let serviceName = "com.luma.browser"
+    private let service = KeychainManager.serviceName
     private let account = "gemini-api-key"
     
     private init() {}
@@ -84,6 +85,62 @@ final class KeychainManager {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.deleteFailed(status)
         }
+    }
+}
+
+// MARK: - Named secrets (provider keys, OAuth credentials)
+
+extension KeychainManager {
+    enum Account: String {
+        case geminiKey = "gemini-api-key"
+        case openAIKey = "openai-api-key"
+        case anthropicKey = "anthropic-api-key"
+        case chatGPTCredentials = "chatgpt-credentials"
+    }
+
+    func store(_ value: Data, for account: Account) throws {
+        try? delete(account)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.serviceName,
+            kSecAttrAccount as String: account.rawValue,
+            kSecValueData as String: value,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw KeychainError.storeFailed(status) }
+    }
+
+    func store(_ value: String, for account: Account) throws {
+        guard let data = value.data(using: .utf8) else { throw KeychainError.invalidData }
+        try store(data, for: account)
+    }
+
+    func data(for account: Account) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.serviceName,
+            kSecAttrAccount as String: account.rawValue,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+        return result as? Data
+    }
+
+    func string(for account: Account) -> String? {
+        data(for: account).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    func delete(_ account: Account) throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Self.serviceName,
+            kSecAttrAccount as String: account.rawValue,
+        ]
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError.deleteFailed(status) }
     }
 }
 

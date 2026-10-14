@@ -2,320 +2,310 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Combine
 
+/// Settings window: category sidebar, search, and grouped forms (macOS
+/// System Settings style, mirroring Helium's categories).
 struct SettingsView: View {
-    var body: some View {
-        TabView {
-            GeneralSettingsView()
-                .tabItem { Label("General", systemImage: "gear") }
-            ModelsSettingsView()
-                .tabItem { Label("AI & Models", systemImage: "cpu") }
-            ProfileSettingsView()
-                .tabItem { Label("Profiles", systemImage: "person.2.fill") }
+    @State private var selection: SettingsPane?
+    @State private var query = ""
+
+    init(initialPane: SettingsPane = .appearance) {
+        _selection = State(initialValue: initialPane)
+    }
+
+    private var visiblePanes: [SettingsPane] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return SettingsPane.allCases }
+        return SettingsPane.allCases.filter { pane in
+            pane.title.lowercased().contains(q) || pane.keywords.contains { $0.contains(q) }
         }
-        .frame(width: 520, height: 560)
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(visiblePanes, selection: $selection) { pane in
+                Label(pane.title, systemImage: pane.icon)
+                    .tag(pane)
+            }
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
+            .searchable(text: $query, placement: .sidebar, prompt: "Search settings")
+            .onChange(of: query) { _, _ in
+                if let selection, !visiblePanes.contains(selection) { self.selection = visiblePanes.first }
+            }
+        } detail: {
+            Group {
+                switch selection ?? .appearance {
+                case .profiles: ProfileSettingsView()
+                case .appearance: AppearanceSettingsView()
+                case .tabs: TabsSettingsView()
+                case .ai: ModelsSettingsView()
+                case .lunaMax: LunaMaxSettingsView()
+                case .passwords: PasswordsSettingsView()
+                case .extensions: ExtensionsSettingsView()
+                case .search: SearchSettingsView()
+                case .about: AboutSettingsView()
+                }
+            }
+            .navigationTitle((selection ?? .appearance).title)
+        }
+        .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 600)
+        .onReceive(SettingsRouter.shared.$requestedPane.compactMap { $0 }) { pane in
+            query = ""
+            selection = pane
+            SettingsRouter.shared.requestedPane = nil
+        }
     }
 }
 
-/// General appearance/text settings.
-private struct GeneralSettingsView: View {
-    @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSizeRaw: Int = 13
+enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
+    case profiles, appearance, tabs, passwords, extensions, ai, lunaMax, search, about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .profiles: return "Profiles"
+        case .appearance: return "Appearance"
+        case .tabs: return "Tabs"
+        case .ai: return "AI & Models"
+        case .lunaMax: return "Luna Max"
+        case .passwords: return "Passwords"
+        case .extensions: return "Extensions"
+        case .search: return "Search"
+        case .about: return "About Luna"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .profiles: return "person.crop.circle"
+        case .appearance: return "paintbrush"
+        case .tabs: return "square.on.square"
+        case .ai: return "sparkles"
+        case .lunaMax: return "wand.and.stars"
+        case .passwords: return "key.fill"
+        case .extensions: return "puzzlepiece.extension"
+        case .search: return "magnifyingglass"
+        case .about: return "info.circle"
+        }
+    }
+
+    /// Words that find this pane from the search field.
+    var keywords: [String] {
+        switch self {
+        case .profiles: return ["profile", "account", "color", "window"]
+        case .appearance: return ["theme", "dark", "light", "layout", "sidebar", "compact", "dynamic", "classic",
+                                  "address", "url", "frameless", "frame", "home", "font", "text size"]
+        case .tabs: return ["memory", "unload", "sleep", "hibernate", "inactive"]
+        case .ai: return ["model", "gemini", "ollama", "openai", "chatgpt", "anthropic", "claude", "api key"]
+        case .extensions: return ["extension", "add-on", "plugin", "chrome web store", "ublock", "adblock"]
+        case .passwords: return ["password", "login", "keychain", "autofill", "import", "touch id"]
+        case .lunaMax: return ["ask on page", "preview", "tidy", "rename", "downloads", "arc max", "folders"]
+        case .search: return ["suggestions", "search engine", "privacy"]
+        case .about: return ["version", "license"]
+        }
+    }
+}
+
+// MARK: - Appearance
+
+private struct AppearanceSettingsView: View {
     @AppStorage("luma_appearance") private var appearance: String = "system"
+    @AppStorage(BrowserLayout.defaultsKey) private var layoutRaw: String = BrowserLayout.sidebar.rawValue
+    @AppStorage(ChromePrefs.centeredAddressBar) private var centeredAddressBar = false
+    @AppStorage(ChromePrefs.minimalURL) private var minimalURL = true
+    @AppStorage(ChromePrefs.addressBarProgress) private var addressBarProgress = true
+    @AppStorage(ChromePrefs.frameless) private var frameless = false
+    @AppStorage(ChromePrefs.alwaysShowTopBar) private var alwaysShowTopBar = false
+    @AppStorage(ChromePrefs.roundedFrame) private var roundedFrame = true
+    @AppStorage(ChromePrefs.showHomeButton) private var showHomeButton = false
+    @AppStorage(ChromePrefs.hideWindowButtons) private var hideWindowButtons = true
+    @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSize: Int = 13
+
+    private var layout: Binding<BrowserLayout> {
+        Binding(get: { BrowserLayout(stored: layoutRaw) }, set: { layoutRaw = $0.rawValue })
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Theme", selection: $appearance) {
+                    Text("System").tag("system")
+                    Text("Light").tag("light")
+                    Text("Dark").tag("dark")
+                }
+            }
+
+            Section {
+                Picker("Browser layout", selection: layout) {
+                    ForEach(BrowserLayout.allCases) { Text($0.title).tag($0) }
+                }
+                Text(layout.wrappedValue.summary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if layout.wrappedValue == .dynamic || layout.wrappedValue == .classic {
+                    Toggle("Centered address bar", isOn: $centeredAddressBar)
+                }
+                Toggle("Minimal URL in the address bar", isOn: $minimalURL)
+                Toggle("Show loading progress in the address bar", isOn: $addressBarProgress)
+            }
+
+            Section {
+                if layout.wrappedValue == .sidebar {
+                    Toggle(isOn: $frameless) {
+                        Text("Auto-hide sidebar")
+                        Text("Hover the left edge of the window to show it.")
+                    }
+                } else {
+                    Toggle(isOn: $frameless) {
+                        Text("Frameless mode")
+                        Text("Hide the browser UI until you hover the window edge.")
+                    }
+                    Toggle("Always show the top bar", isOn: $alwaysShowTopBar)
+                        .disabled(!frameless)
+                }
+                Toggle(isOn: $hideWindowButtons) {
+                    Text("Hide window buttons with the bar")
+                    Text("The close, minimize and full-screen buttons disappear while the bar or sidebar is hidden.")
+                }
+                Toggle("Show a rounded frame around web contents", isOn: $roundedFrame)
+                if layout.wrappedValue != .sidebar {
+                    Toggle("Show home button", isOn: $showHomeButton)
+                }
+            }
+
+            Section("AI panel") {
+                LabeledContent("Text size") {
+                    HStack {
+                        Slider(value: Binding(get: { Double(aiPanelFontSize) },
+                                              set: { aiPanelFontSize = Int($0.rounded()) }),
+                               in: 10...24, step: 1)
+                            .frame(width: 200)
+                        Text("\(aiPanelFontSize) pt")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Tabs
+
+private struct TabsSettingsView: View {
+    @AppStorage(TabHibernator.timeoutDefaultsKey) private var hibernateMinutes: Int = TabHibernator.defaultTimeoutMinutes
+
+    var body: some View {
+        Form {
+            Section {
+                Picker(selection: $hibernateMinutes) {
+                    Text("Never").tag(0)
+                    Text("After 15 minutes").tag(15)
+                    Text("After 30 minutes").tag(30)
+                    Text("After 1 hour").tag(60)
+                    Text("After 2 hours").tag(120)
+                } label: {
+                    Text("Unload inactive tabs")
+                    Text("Frees memory. Tabs playing media or using the camera or microphone stay loaded.")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Luna Max
+
+private struct LunaMaxSettingsView: View {
+    @AppStorage(LunaMaxPrefs.askOnPage) private var askOnPage = true
+    @AppStorage(LunaMaxPrefs.linkPreviews) private var linkPreviews = true
+    @AppStorage(LunaMaxPrefs.tidyTitles) private var tidyTitles = false
+    @AppStorage(LunaMaxPrefs.tidyDownloads) private var tidyDownloads = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: $askOnPage) {
+                    Text("Ask on Page")
+                    Text("Hold ⌘F, or press ⌘⇧F, to ask a question about the page you're on.")
+                }
+                Toggle(isOn: $linkPreviews) {
+                    Text("Link previews")
+                    Text("Hover over a link and press Shift to see a short summary of the page it opens.")
+                }
+            } header: {
+                Text("When you ask")
+            }
+
+            Section {
+                Toggle(isOn: $tidyTitles) {
+                    Text("Tidy titles for pinned tabs")
+                    Text("Gives tabs a short name when you pin them or add them to Favorites.")
+                }
+                Toggle(isOn: $tidyDownloads) {
+                    Text("Tidy downloads")
+                    Text("Renames downloaded files so they're easier to find. You can undo it in Downloads.")
+                }
+            } header: {
+                Text("Automatic")
+            } footer: {
+                Text("Automatic features send tab titles or file names to your AI provider. Tidy Today is always available from the ✦ button on the Today divider in the sidebar.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Search
+
+private struct SearchSettingsView: View {
     @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("General")
-                    .font(.largeTitle)
-                    .padding(.bottom)
-
-                // AI Panel Text Size (6–32 pt slider)
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("AI Panel Text Size")
-                            .font(.headline)
-                        Spacer()
-                        Text("\(aiPanelFontSizeRaw) pt")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Slider(value: Binding(
-                        get: { Double(aiPanelFontSizeRaw) },
-                        set: { aiPanelFontSizeRaw = Int($0.rounded()) }
-                    ), in: 6...32, step: 1)
+        Form {
+            Section {
+                Toggle(isOn: $searchSuggestionsEnabled) {
+                    Text("Search suggestions")
+                    Text("Sends what you type in the address bar to the search engine to suggest queries.")
                 }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-
-                Toggle("Send typing to search suggestions", isOn: $searchSuggestionsEnabled)
-                    .toggleStyle(.switch)
-                    .padding()
-                    .background(Color.gray.opacity(0.1))
-                    .cornerRadius(8)
-
-                // Appearance (Light / Dark / System)
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Appearance")
-                        .font(.headline)
-                    Picker("", selection: $appearance) {
-                        Text("Light").tag("light")
-                        Text("Dark").tag("dark")
-                        Text("System").tag("system")
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-
-                Spacer()
             }
-            .padding()
         }
+        .formStyle(.grouped)
     }
 }
 
-/// Settings for AI provider, Gemini key, and local/Ollama models.
-private struct ModelsSettingsView: View {
-    @AppStorage("luma_ai_provider") private var aiProviderRaw: String = AIProvider.gemini.rawValue
+// MARK: - About
 
-    // Gemini
-    @State private var keyInput: String = ""
-    @State private var hasKey: Bool = false
-    @State private var statusText: String = ""
-    @State private var isProcessingKey: Bool = false
-
-    // Ollama / local
-    @AppStorage("luma_ollama_base_url") private var ollamaBaseURL: String = "http://127.0.0.1:11434"
-    @AppStorage("luma_ollama_model") private var ollamaModel: String = ""
-    @State private var availableModels: [String] = []
-    @State private var modelsStatus: String = ""
-    @State private var isRefreshingModels: Bool = false
-
-    private let ollamaClient = OllamaClient()
-
-    private var aiProvider: AIProvider {
-        AIProvider(rawValue: aiProviderRaw) ?? .gemini
+private struct AboutSettingsView: View {
+    private var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = info?["CFBundleVersion"] as? String ?? "1"
+        return "Version \(short) (\(build))"
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("AI & Models")
-                    .font(.largeTitle)
-                    .padding(.bottom)
-
-                // Provider selection
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("AI Provider")
-                        .font(.headline)
-                    Picker("AI Provider", selection: $aiProviderRaw) {
-                        ForEach(AIProvider.allCases) { provider in
-                            Text(provider.displayName).tag(provider.rawValue)
-                        }
-                    }
-                    .pickerStyle(.radioGroup)
-                }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-
-                // Gemini section
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Gemini API Key (BYO)")
-                            .font(.headline)
-                        Spacer()
-                        if aiProvider == .gemini {
-                            Text("Active")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        } else {
-                            Text("Inactive")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Text("Enter your Gemini API key. It is stored securely in Keychain and never logged.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    SecureField("Enter API key", text: $keyInput)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(isProcessingKey)
-
-                    Text("AI Status: " + (hasKey ? "Key stored" : "No API key"))
-                        .font(.caption)
-                        .foregroundColor(hasKey ? .green : .secondary)
-
-                    if !statusText.isEmpty {
-                        Text(statusText)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack(spacing: 12) {
-                        Button("Save Key") {
-                            saveKey()
-                        }
-                        .disabled(isProcessingKey || keyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                        Button("Delete Key") {
-                            deleteKey()
-                        }
-                        .disabled(isProcessingKey || !hasKey)
+        Form {
+            Section {
+                HStack(spacing: 14) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 56, height: 56)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Luna").font(.title2.weight(.semibold))
+                        Text(version).foregroundStyle(.secondary)
                     }
                 }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-
-                // Local / Ollama section
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Local / Ollama")
-                            .font(.headline)
-                        Spacer()
-                        if aiProvider == .ollama {
-                            Text("Active")
-                                .font(.caption)
-                                .foregroundColor(.green)
-                        } else {
-                            Text("Inactive")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Text("Run models locally via Ollama instead of sending prompts to a cloud API.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Ollama Base URL")
-                            .font(.subheadline)
-                        TextField("http://127.0.0.1:11434", text: $ollamaBaseURL)
-                            .textFieldStyle(.roundedBorder)
-                            .disableAutocorrection(true)
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Model")
-                                .font(.subheadline)
-                            Spacer()
-                            Button(action: refreshModels) {
-                                if isRefreshingModels {
-                                    ProgressView().scaleEffect(0.7)
-                                } else {
-                                    Text("Refresh models")
-                                }
-                            }
-                            .disabled(isRefreshingModels)
-                        }
-
-                        if !availableModels.isEmpty {
-                            Picker("Model", selection: $ollamaModel) {
-                                ForEach(availableModels, id: \.self) { model in
-                                    Text(model).tag(model)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                        } else {
-                            Text("No models loaded yet. Click “Refresh models” to query Ollama.")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    if !modelsStatus.isEmpty {
-                        Text(modelsStatus)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-
-                Spacer()
-            }
-            .padding()
-        }
-        .onAppear {
-            loadKeyStatus()
-        }
-    }
-
-    // MARK: - Gemini helpers
-
-    private func loadKeyStatus() {
-        let existingKey = KeychainManager.shared.fetchGeminiKey()
-        hasKey = (existingKey != nil)
-        statusText = hasKey ? "Key stored in Keychain. AI Status: Ready." : "No Gemini key saved."
-    }
-
-    private func saveKey() {
-        let trimmed = keyInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            statusText = "Key cannot be empty"
-            return
-        }
-
-        isProcessingKey = true
-        statusText = ""
-
-        do {
-            try KeychainManager.shared.storeGeminiKey(trimmed)
-            hasKey = true
-            keyInput = "" // Clear input field for security
-            statusText = "Key saved to Keychain. AI Status: Ready."
-        } catch {
-            statusText = "Error saving key: \(error.localizedDescription)"
-        }
-
-        isProcessingKey = false
-    }
-
-    private func deleteKey() {
-        isProcessingKey = true
-        statusText = ""
-
-        do {
-            try KeychainManager.shared.deleteGeminiKey()
-            hasKey = false
-            statusText = "Key deleted. AI Status: No API key."
-        } catch {
-            statusText = "Error deleting key: \(error.localizedDescription)"
-        }
-
-        isProcessingKey = false
-    }
-
-    // MARK: - Ollama helpers
-
-    private func refreshModels() {
-        isRefreshingModels = true
-        modelsStatus = "Contacting Ollama…"
-        ollamaClient.listModels(baseURLString: ollamaBaseURL) { result in
-            isRefreshingModels = false
-            switch result {
-            case .success(let models):
-                availableModels = models.sorted()
-                if availableModels.isEmpty {
-                    modelsStatus = "No models reported by Ollama. Make sure at least one model is pulled."
-                } else {
-                    modelsStatus = "Loaded \(availableModels.count) models from Ollama."
-                    if ollamaModel.isEmpty, let first = availableModels.first {
-                        ollamaModel = first
-                    }
-                }
-            case .failure(let error):
-                modelsStatus = error.localizedDescription
+                .padding(.vertical, 4)
+                LabeledContent("License", value: "MIT")
+                Link("Source code on GitHub", destination: URL(string: "https://github.com/Rahul4301/Luna")!)
             }
         }
+        .formStyle(.grouped)
     }
 }

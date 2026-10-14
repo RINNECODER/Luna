@@ -17,17 +17,22 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     let profileId: UUID
     private let websiteDataStore: WKWebsiteDataStore
     private var webViews: [UUID: WKWebView] = [:]
+    /// The focused tab (in a split, the focused pane). Chrome mirrors its state
+    /// through the `…ForActiveTab` properties; every other visible pane reads
+    /// its own state from the per-tab dictionaries below.
     private(set) var activeTab: UUID?
     @Published var currentURL: URL?
 
     /// Per-tab page theme: background color and whether it is dark (for contrasting text).
-    fileprivate var pageThemeByTab: [UUID: (color: NSColor, isDark: Bool)] = [:]
+    @Published fileprivate(set) var pageThemeByTab: [UUID: (color: NSColor, isDark: Bool)] = [:]
     /// Theme for the currently active tab; used by chrome (tabs, address bar) to match page.
     @Published var pageThemeForActiveTab: (color: Color, isDark: Bool)?
 
-    /// Back/forward state for the active tab (updated in didFinish and when navigating).
-    private var canGoBackByTab: [UUID: Bool] = [:]
-    private var canGoForwardByTab: [UUID: Bool] = [:]
+    /// Per-tab back/forward state (kept live via KVO).
+    @Published private(set) var canGoBackByTab: [UUID: Bool] = [:]
+    @Published private(set) var canGoForwardByTab: [UUID: Bool] = [:]
+    /// Load progress (0…1) for tabs that are currently loading; absent when idle.
+    @Published private(set) var loadingProgressByTab: [UUID: Double] = [:]
     @Published var canGoBackForActiveTab: Bool = false
     @Published var canGoForwardForActiveTab: Bool = false
 
@@ -54,9 +59,39 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     
     /// When true, Google AI Studio showed "request is suspicious" — show in-app explanation (Google’s decision, not a Luma bug).
     @Published var googleSuspiciousErrorDetected: Bool = false
+
+    /// Luna Max link preview: the link the user is Shift-hovering, in web view coordinates.
+    struct LinkPreviewRequest: Equatable {
+        let tabId: UUID
+        let url: URL
+        let rect: CGRect
+    }
+    @Published var linkPreview: LinkPreviewRequest?
+
+    // MARK: Luna Passwords
+
+    /// Saved logins available for the login form on a tab's page.
+    struct PasswordFillOffer: Equatable {
+        let tabId: UUID
+        let host: String
+        let credentials: [PasswordVault.Credential]
+    }
+    /// A login just submitted that isn't saved yet.
+    struct PasswordSaveOffer: Equatable {
+        let tabId: UUID
+        let host: String
+        var username: String
+        let password: String
+    }
+    @Published var passwordFillOffer: PasswordFillOffer?
+    @Published var passwordSaveOffer: PasswordSaveOffer?
+    /// Usernames typed on a host this session, for two-step sign-ins.
+    private var lastUsernameByHost: [String: String] = [:]
     
     /// TabManager reference for updating titles
     weak var tabManager: TabManager?
+    /// The profile's web-extension controller; attached to every tab's configuration.
+    weak var extensionController: WKWebExtensionController?
     var onNavigationFinished: ((UUID, URL, String) -> Void)?
 
     init(profileId: UUID, dataStore: WKWebsiteDataStore) {
@@ -111,6 +146,176 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
             primaryTintByTab[tabId] = color
         } else {
             primaryTintByTab.removeValue(forKey: tabId)
+        }
+    }
+
+    private lazy var passwordHandler: PasswordMessageHandler = {
+        let h = PasswordMessageHandler()
+        h.wrapper = self
+        return h
+    }()
+
+    static let passwordScriptSource = """
+        (function(){
+            var handler = window.webkit && window.webkit.messageHandlers.lunaPasswords;
+            if (!handler) return;
+            function visible(el) {
+                var r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+            }
+            function passwordFields() {
+                return Array.prototype.filter.call(document.querySelectorAll('input[type=password]'), visible);
+            }
+            function usernameFieldFor(pw) {
+                var scope = (pw && pw.form) || document;
+                var inputs = Array.prototype.filter.call(scope.querySelectorAll('input'), function(i) {
+                    return visible(i) && /^(text|email|tel|)$/i.test(i.type);
+                });
+                if (!pw) return inputs[0] || null;
+                var before = inputs.filter(function(i) { return i.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING; });
+                return before.length ? before[before.length - 1] : (inputs[0] || null);
+            }
+            function host() { return location.host.replace(/^www\\./, '').toLowerCase(); }
+            var reported = false;
+            function scan() {
+                if (reported) return;
+                var userOnly = document.querySelector('input[autocomplete~=username], input[autocomplete~=email]');
+                if (passwordFields().length || (userOnly && visible(userOnly))) {
+                    reported = true;
+                    handler.postMessage({type: 'form', host: host()});
+                }
+            }
+            var timer = null;
+            new MutationObserver(function() { clearTimeout(timer); timer = setTimeout(scan, 400); })
+                .observe(document.documentElement, {childList: true, subtree: true});
+            scan();
+            function capture(pw) {
+                if (!pw || !pw.value) return;
+                var u = usernameFieldFor(pw);
+                handler.postMessage({type: 'submit', host: host(), username: u ? u.value : '', password: pw.value});
+            }
+            function rememberUsername() {
+                var u = document.querySelector('input[autocomplete~=username], input[autocomplete~=email], input[type=email]');
+                if (u && u.value) handler.postMessage({type: 'username', host: host(), username: u.value});
+            }
+            document.addEventListener('submit', function(e) {
+                var pw = e.target.querySelector ? e.target.querySelector('input[type=password]') : null;
+                if (pw) capture(pw); else rememberUsername();
+            }, true);
+            document.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter' || !e.target) return;
+                if (e.target.type === 'password') capture(e.target); else rememberUsername();
+            }, true);
+            document.addEventListener('click', function(e) {
+                var b = e.target.closest ? e.target.closest('button, input[type=submit], [role=button]') : null;
+                if (!b) return;
+                var filled = passwordFields().filter(function(p) { return p.value; });
+                if (filled.length) capture(filled[0]); else rememberUsername();
+            }, true);
+            window.__lunaFill = function(user, pass, expectedHost) {
+                if (host() !== expectedHost) return false;
+                var pw = passwordFields()[0] || null;
+                var u = pw ? usernameFieldFor(pw)
+                           : document.querySelector('input[autocomplete~=username], input[autocomplete~=email], input[type=email]');
+                var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                function set(el, v) {
+                    if (!el) return;
+                    setter.call(el, v);
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                if (u && user) set(u, user);
+                if (pw) set(pw, pass);
+                return !!(pw || u);
+            };
+        })();
+        """
+
+    fileprivate func handlePasswordMessage(_ body: Any, from webView: WKWebView?) {
+        guard let webView, let tabId = tabId(for: webView), let dict = body as? [String: Any],
+              let host = dict["host"] as? String, !host.isEmpty,
+              // Only trust the page's own top-level host.
+              PasswordVault.normalize(webView.url?.host ?? "") == host else { return }
+        let vault = PasswordVault.shared
+        switch dict["type"] as? String {
+        case "form":
+            let saved = vault.credentials(profile: profileId, host: host)
+            if !saved.isEmpty { passwordFillOffer = PasswordFillOffer(tabId: tabId, host: host, credentials: saved) }
+        case "username":
+            if let user = dict["username"] as? String, !user.isEmpty { lastUsernameByHost[host] = user }
+        case "submit":
+            guard let password = dict["password"] as? String, !password.isEmpty, !vault.isNeverSave(host) else { return }
+            var username = dict["username"] as? String ?? ""
+            if username.isEmpty { username = lastUsernameByHost[host] ?? "" } else { lastUsernameByHost[host] = username }
+            guard !vault.isSaved(host: host, username: username, password: password, profile: profileId) else { return }
+            let offer = PasswordSaveOffer(tabId: tabId, host: host, username: username, password: password)
+            if passwordSaveOffer != offer { passwordSaveOffer = offer }
+        default:
+            break
+        }
+    }
+
+    /// Unlocks the vault and fills the login form on the tab's current page.
+    @discardableResult
+    func fillPassword(_ credential: PasswordVault.Credential, in tabId: UUID) async -> Bool {
+        guard let webView = webViews[tabId], PasswordVault.normalize(webView.url?.host ?? "") == credential.host,
+              await PasswordVault.shared.unlock(reason: "fill your password for \(credential.host)"),
+              let password = try? PasswordVault.shared.password(for: credential, profile: profileId) else { return false }
+        let result = try? await webView.callAsyncJavaScript(
+            "return window.__lunaFill ? window.__lunaFill(user, pass, host) : false;",
+            arguments: ["user": credential.username, "pass": password, "host": credential.host],
+            in: nil, contentWorld: .defaultClient)
+        return (result as? Bool) == true
+    }
+
+    private lazy var linkPreviewHandler: LinkPreviewMessageHandler = {
+        let h = LinkPreviewMessageHandler()
+        h.wrapper = self
+        return h
+    }()
+
+    /// Tracks the hovered link; pressing Shift shows a preview, which stays (so the pointer can
+    /// reach the card) until the user clicks in the page, scrolls, presses Escape or the window blurs.
+    static let linkPreviewScriptSource = """
+        (function(){
+            var handler = window.webkit && window.webkit.messageHandlers.lunaLinkPreview;
+            if (!handler) return;
+            var hovered = null, shown = false;
+            function linkAt(t) { return t && t.closest ? t.closest('a[href]') : null; }
+            function hide() { if (shown) { shown = false; handler.postMessage({type: 'hide'}); } }
+            document.addEventListener('mouseover', function(e) { hovered = linkAt(e.target); }, true);
+            document.addEventListener('mouseout', function(e) {
+                var a = linkAt(e.target);
+                if (a && a === hovered && !a.contains(e.relatedTarget)) { hovered = null; }
+            }, true);
+            document.addEventListener('keydown', function(e) {
+                if (e.key !== 'Shift' || e.repeat || !hovered) return;
+                var href = hovered.href;
+                if (!/^https?:/i.test(href)) return;
+                var r = hovered.getBoundingClientRect();
+                shown = true;
+                handler.postMessage({type: 'show', url: href, x: r.left, y: r.top, w: r.width, h: r.height});
+            }, true);
+            document.addEventListener('keydown', function(e) { if (e.key === 'Escape') hide(); }, true);
+            document.addEventListener('mousedown', hide, true);
+            window.addEventListener('scroll', hide, true);
+            window.addEventListener('blur', hide);
+        })();
+        """
+
+    fileprivate func handleLinkPreview(_ body: Any, from webView: WKWebView?) {
+        guard let webView, let tabId = tabId(for: webView), let dict = body as? [String: Any] else { return }
+        if dict["type"] as? String == "show",
+           LunaMaxPrefs.isOn(LunaMaxPrefs.linkPreviews),
+           NSEvent.modifierFlags.contains(.shift),
+           let href = dict["url"] as? String, let url = URL(string: href),
+           url.scheme == "http" || url.scheme == "https" {
+            let zoom = webView.pageZoom
+            let rect = CGRect(x: (dict["x"] as? Double ?? 0) * zoom, y: (dict["y"] as? Double ?? 0) * zoom,
+                              width: (dict["w"] as? Double ?? 0) * zoom, height: (dict["h"] as? Double ?? 0) * zoom)
+            linkPreview = LinkPreviewRequest(tabId: tabId, url: url, rect: rect)
+        } else if linkPreview?.tabId == tabId {
+            linkPreview = nil
         }
     }
 
@@ -307,6 +512,7 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         let config = WKWebViewConfiguration()
         // Use per-profile data store so cookies/sessions are fully isolated between profiles.
         config.websiteDataStore = websiteDataStore
+        config.webExtensionController = extensionController
         // Enable JavaScript via per-navigation preferences (preferences.javaScriptEnabled is deprecated).
         config.defaultWebpagePreferences.allowsContentJavaScript = true
         // Enable Web Inspector + "Inspect Element" in context menu (macOS WebKit Developer Extras).
@@ -320,6 +526,15 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         config.userContentController.addUserScript(themeScript)
         let googleErrorScript = WKUserScript(source: WebViewWrapper.googleSuspiciousErrorScriptSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         config.userContentController.addUserScript(googleErrorScript)
+        // Passwords: form detection and filling live in an isolated content world, so page
+        // scripts can neither read saved passwords nor fake a submit.
+        config.userContentController.add(passwordHandler, contentWorld: .defaultClient, name: "lunaPasswords")
+        config.userContentController.addUserScript(WKUserScript(source: WebViewWrapper.passwordScriptSource, injectionTime: .atDocumentEnd,
+                                                                forMainFrameOnly: true, in: .defaultClient))
+        // Link previews run in an isolated content world: page scripts can't see or spoof this channel.
+        config.userContentController.add(linkPreviewHandler, contentWorld: .defaultClient, name: "lunaLinkPreview")
+        config.userContentController.addUserScript(WKUserScript(source: WebViewWrapper.linkPreviewScriptSource, injectionTime: .atDocumentEnd,
+                                                                forMainFrameOnly: true, in: .defaultClient))
         let wv = WKWebView(frame: .zero, configuration: config)
         // Use Safari UA for all requests to avoid bot detection on Akamai-protected sites.
         wv.customUserAgent = WebViewWrapper.safariUserAgent
@@ -360,7 +575,41 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
                 self.updateBackForwardForActiveTab()
             }
         }
-        observations[tabId] = [titleObservation, urlObservation, canGoBackObservation, canGoForwardObservation]
+        // Progress is coarsened to 10% steps so a load doesn't re-render the shell on every tick.
+        let progressObservation = wv.observe(\.estimatedProgress, options: [.new]) { [weak self, tabId] webView, _ in
+            DispatchQueue.main.async { self?.updateLoadingProgress(for: tabId, webView: webView) }
+        }
+        let loadingObservation = wv.observe(\.isLoading, options: [.new]) { [weak self, tabId] webView, _ in
+            DispatchQueue.main.async { self?.updateLoadingProgress(for: tabId, webView: webView) }
+        }
+        observations[tabId] = [titleObservation, urlObservation, canGoBackObservation, canGoForwardObservation,
+                               progressObservation, loadingObservation]
+    }
+
+    private func updateLoadingProgress(for tabId: UUID, webView: WKWebView) {
+        guard webViews[tabId] === webView else { return }
+        if webView.isLoading {
+            let stepped = (webView.estimatedProgress * 10).rounded(.down) / 10
+            if loadingProgressByTab[tabId] != stepped { loadingProgressByTab[tabId] = stepped }
+        } else if loadingProgressByTab[tabId] != nil {
+            loadingProgressByTab.removeValue(forKey: tabId)
+        }
+    }
+
+    // MARK: - Per-tab reads
+
+    /// Tabs that currently have a live web view.
+    var loadedTabIds: Set<UUID> { Set(webViews.keys) }
+
+    func pageTheme(for tabId: UUID) -> (color: NSColor, isDark: Bool)? { pageThemeByTab[tabId] }
+
+    /// True when the tab must not be unloaded: playing media or using camera/mic.
+    func isBusy(_ tabId: UUID, completion: @escaping (Bool) -> Void) {
+        guard let wv = webViews[tabId] else { return completion(false) }
+        if wv.cameraCaptureState != .none || wv.microphoneCaptureState != .none { return completion(true) }
+        wv.requestMediaPlaybackState { state in
+            DispatchQueue.main.async { completion(state == .playing) }
+        }
     }
 
     // MARK: - Printing
@@ -433,6 +682,28 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         if activeTab == tabId {
             currentURL = url
         }
+    }
+
+    /// Restores a tab's back/forward list and current page from saved
+    /// `interactionState`; falls back to a plain load if WebKit rejects it.
+    func restore(interactionState: Data, fallbackURL: URL, in tabId: UUID) {
+        let wv = ensureWebView(for: tabId)
+        wv.customUserAgent = Self.userAgent(for: fallbackURL)
+        wv.interactionState = interactionState
+        if wv.url == nil && !wv.isLoading {
+            load(url: fallbackURL, in: tabId)
+        } else if activeTab == tabId {
+            currentURL = wv.url ?? fallbackURL
+        }
+    }
+
+    /// Back/forward state for every live web page, for session persistence.
+    func interactionStates() -> [UUID: Data] {
+        var result: [UUID: Data] = [:]
+        for (id, wv) in webViews where wv.url != nil {
+            if let data = wv.interactionState as? Data { result[id] = data }
+        }
+        return result
     }
 
     func goBack(in tabId: UUID) {
@@ -643,7 +914,9 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     }
 
     /// Removes a tab's WebView when the tab is closed.
-    func removeWebView(for tabId: UUID) {
+    /// - Parameter keepMetadata: true when hibernating, so the tab keeps its
+    ///   favicon, tint, theme and zoom while unloaded.
+    func removeWebView(for tabId: UUID, keepMetadata: Bool = false) {
         observations.removeValue(forKey: tabId)
         lastFindQueryByTab.removeValue(forKey: tabId)
         // Stop any in-flight load and detach delegates so callbacks can't fire during teardown.
@@ -652,13 +925,16 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
             wv.navigationDelegate = nil
             wv.uiDelegate = nil
         }
-        faviconURLByTab.removeValue(forKey: tabId)
-        primaryTintByTab.removeValue(forKey: tabId)
         webViews.removeValue(forKey: tabId)
-        pageThemeByTab.removeValue(forKey: tabId)
-        zoomByTab.removeValue(forKey: tabId)
-        canGoBackByTab.removeValue(forKey: tabId)
-        canGoForwardByTab.removeValue(forKey: tabId)
+        loadingProgressByTab.removeValue(forKey: tabId)
+        if !keepMetadata {
+            faviconURLByTab.removeValue(forKey: tabId)
+            primaryTintByTab.removeValue(forKey: tabId)
+            pageThemeByTab.removeValue(forKey: tabId)
+            zoomByTab.removeValue(forKey: tabId)
+            canGoBackByTab.removeValue(forKey: tabId)
+            canGoForwardByTab.removeValue(forKey: tabId)
+        }
         if activeTab == tabId {
             activeTab = nil
             currentURL = nil
@@ -783,6 +1059,11 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
         download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard let tabId = tabId(for: webView), passwordFillOffer?.tabId == tabId else { return }
+        passwordFillOffer = nil
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -1017,6 +1298,31 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         print("WebViewWrapper: Popup closed via window.close(), removing tab \(tabId)")
         tabManager?.closeTab(tabId)
         removeWebView(for: tabId)
+    }
+}
+
+// MARK: - Password message handler (isolated content world)
+
+private final class PasswordMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var wrapper: WebViewWrapper?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame else { return }
+        let body = message.body
+        let webView = message.webView
+        DispatchQueue.main.async { [weak self] in self?.wrapper?.handlePasswordMessage(body, from: webView) }
+    }
+}
+
+// MARK: - Link preview message handler (isolated content world)
+
+private final class LinkPreviewMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var wrapper: WebViewWrapper?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        let body = message.body
+        let webView = message.webView
+        DispatchQueue.main.async { [weak self] in self?.wrapper?.handleLinkPreview(body, from: webView) }
     }
 }
 

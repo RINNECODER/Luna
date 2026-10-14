@@ -87,54 +87,23 @@ extension View {
     }
 }
 
-// MARK: - Aurora glow (ChatGPT-style animated multicolor rim for input bars)
+// MARK: - Focus shadow (input bars)
 
-/// A soft animated angular gradient that hugs a capsule/rounded-rect edge.
-/// Apple's Siri and the ChatGPT macOS app use this treatment on their input
-/// fields; the hue drift is slow and the light sits mostly at the rim.
-struct AuroraGlow<S: InsettableShape>: View {
-    var shape: S
+/// A small, soft drop shadow that deepens slightly while the field has focus.
+/// No colored ring or glow.
+struct FocusShadow: ViewModifier {
     var isActive: Bool
-    var lineWidth: CGFloat = 2
 
-    @State private var angle: Double = 0
-
-    private var gradient: AngularGradient {
-        AngularGradient(
-            gradient: Gradient(colors: [
-                Color(red: 0.36, green: 0.63, blue: 1.0),   // blue
-                Color(red: 0.68, green: 0.47, blue: 1.0),   // violet
-                Color(red: 1.0, green: 0.52, blue: 0.62),   // pink
-                Color(red: 1.0, green: 0.72, blue: 0.45),   // amber
-                Color(red: 0.42, green: 0.85, blue: 0.70),  // teal
-                Color(red: 0.36, green: 0.63, blue: 1.0),   // wrap to blue
-            ]),
-            center: .center,
-            angle: .degrees(angle)
-        )
+    func body(content: Content) -> some View {
+        content
+            .compositingGroup()
+            .shadow(color: .black.opacity(isActive ? 0.22 : 0.10), radius: isActive ? 7 : 3, y: isActive ? 2.5 : 1)
+            .animation(.easeOut(duration: 0.15), value: isActive)
     }
+}
 
-    var body: some View {
-        ZStack {
-            // Wide, blurred halo behind the rim
-            shape
-                .strokeBorder(gradient, lineWidth: lineWidth * 4)
-                .blur(radius: 14)
-                .opacity(isActive ? 0.55 : 0.28)
-            // Crisp rim light
-            shape
-                .strokeBorder(gradient, lineWidth: lineWidth)
-                .blur(radius: 0.6)
-                .opacity(isActive ? 0.9 : 0.5)
-        }
-        .allowsHitTesting(false)
-        .onAppear {
-            withAnimation(.linear(duration: 14).repeatForever(autoreverses: false)) {
-                angle = 360
-            }
-        }
-        .animation(.easeInOut(duration: 0.35), value: isActive)
-    }
+extension View {
+    func focusShadow(_ isActive: Bool) -> some View { modifier(FocusShadow(isActive: isActive)) }
 }
 
 // MARK: - Glass icon button (circular, toolbar-grade)

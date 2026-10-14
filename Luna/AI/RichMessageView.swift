@@ -54,7 +54,7 @@ struct RichMessageView: View {
         LaTeX(text)
             .parsingMode(.onlyEquations)
             .imageRenderingMode(.template)
-            .foregroundStyle(Color.white.opacity(0.95))
+            .foregroundStyle(Color.primary)
             .blockMode(.blockViews)
             .errorMode(.original)
             .renderingStyle(.original)
@@ -175,7 +175,7 @@ struct RichMessageView: View {
 
     private var lumaTheme: MarkdownUI.Theme {
         .init()
-            .text { ForegroundColor(Color.white.opacity(0.95)) }
+            .text { ForegroundColor(Color.primary) }
             .link { ForegroundColor(linkColor); UnderlineStyle(.single) }
             .strong { FontWeight(.semibold) }
             .emphasis { FontStyle(.italic) }
@@ -185,7 +185,7 @@ struct RichMessageView: View {
                     .markdownTextStyle {
                         FontSize(fontSize + 10)
                         FontWeight(.bold)
-                        ForegroundColor(Color.white)
+                        ForegroundColor(Color.primary)
                     }
                     .markdownMargin(top: 16, bottom: 8)
             }
@@ -194,7 +194,7 @@ struct RichMessageView: View {
                     .markdownTextStyle {
                         FontSize(fontSize + 6)
                         FontWeight(.bold)
-                        ForegroundColor(Color.white)
+                        ForegroundColor(Color.primary)
                     }
                     .markdownMargin(top: 14, bottom: 6)
             }
@@ -203,7 +203,7 @@ struct RichMessageView: View {
                     .markdownTextStyle {
                         FontSize(fontSize + 3)
                         FontWeight(.semibold)
-                        ForegroundColor(Color.white)
+                        ForegroundColor(Color.primary)
                     }
                     .markdownMargin(top: 12, bottom: 4)
             }
@@ -212,7 +212,7 @@ struct RichMessageView: View {
                     .markdownTextStyle {
                         FontSize(fontSize + 1)
                         FontWeight(.semibold)
-                        ForegroundColor(Color.white.opacity(0.9))
+                        ForegroundColor(Color.primary.opacity(0.92))
                     }
                     .markdownMargin(top: 10, bottom: 4)
             }
@@ -221,7 +221,7 @@ struct RichMessageView: View {
                     .markdownTextStyle {
                         FontSize(fontSize)
                         FontWeight(.semibold)
-                        ForegroundColor(Color.white.opacity(0.85))
+                        ForegroundColor(Color.primary.opacity(0.85))
                     }
                     .markdownMargin(top: 8, bottom: 2)
             }
@@ -230,7 +230,7 @@ struct RichMessageView: View {
                     .markdownTextStyle {
                         FontSize(fontSize)
                         FontWeight(.medium)
-                        ForegroundColor(Color.white.opacity(0.8))
+                        ForegroundColor(Color.primary.opacity(0.8))
                     }
                     .markdownMargin(top: 6, bottom: 2)
             }
@@ -245,27 +245,27 @@ struct RichMessageView: View {
                         .markdownTextStyle {
                             FontFamilyVariant(.monospaced)
                             FontSize(fontSize - 1)
-                            ForegroundColor(Color.white.opacity(0.9))
+                            ForegroundColor(Color.primary.opacity(0.92))
                         }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(Color.white.opacity(0.08))
+                .background(Color.primary.opacity(0.07))
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .markdownMargin(top: 4, bottom: 4)
             }
             .code {
                 FontFamilyVariant(.monospaced)
                 FontSize(fontSize - 1)
-                BackgroundColor(Color.white.opacity(0.1))
+                BackgroundColor(Color.primary.opacity(0.08))
             }
             .blockquote { configuration in
                 HStack(spacing: 0) {
                     RoundedRectangle(cornerRadius: 1.5)
-                        .fill(Color.white.opacity(0.25))
+                        .fill(Color.primary.opacity(0.25))
                         .frame(width: 3)
                     configuration.label
-                        .markdownTextStyle { ForegroundColor(Color.white.opacity(0.7)) }
+                        .markdownTextStyle { ForegroundColor(Color.primary.opacity(0.7)) }
                         .padding(.leading, 10)
                 }
                 .markdownMargin(top: 4, bottom: 4)
@@ -281,7 +281,7 @@ struct RichMessageView: View {
             }
             .thematicBreak {
                 Divider()
-                    .overlay(Color.white.opacity(0.15))
+                    .overlay(Color.primary.opacity(0.15))
                     .markdownMargin(top: 8, bottom: 8)
             }
             .image { configuration in

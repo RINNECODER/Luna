@@ -29,30 +29,49 @@ enum ProfileStoreRegistry {
 /// Browser state owned by exactly one profile.
 final class ProfileSession: ObservableObject {
     let profileId: UUID
+    let workspace: WorkspaceStore
     let tabManager: TabManager
     let webViewWrapper: WebViewWrapper
     let historyManager: HistoryManager
     let chatStore: ChatStore
+    let hibernator: TabHibernator
+    let extensions: ExtensionHost
 
     private var cancellables: Set<AnyCancellable> = []
+    private var knownTabIds: Set<UUID> = []
+    private var lastVisibleTabIds: [UUID] = []
 
     // Avoid the MainActor isolated-deinit executor hop that double-frees
     // task-local storage on current macOS runtimes (swiftlang/swift#88036).
     nonisolated deinit {}
 
-    init(profileId: UUID, dataStore: WKWebsiteDataStore) {
+    /// - Parameter workspace: injected store (tests); by default the profile's
+    ///   persisted workspace when no other window owns it, else in-memory.
+    init(profileId: UUID, dataStore: WKWebsiteDataStore, workspace: WorkspaceStore? = nil) {
         self.profileId = profileId
-        self.tabManager = TabManager()
+        self.workspace = workspace ?? WorkspaceOwnership.makeStore(for: profileId)
+        self.tabManager = TabManager(store: self.workspace)
         let stores = ProfileStoreRegistry.stores(for: profileId)
         self.historyManager = stores.history
         self.chatStore = stores.chats
         self.webViewWrapper = WebViewWrapper(profileId: profileId, dataStore: dataStore)
+        self.hibernator = TabHibernator(store: self.workspace, web: webViewWrapper)
+        self.extensions = ExtensionHost(profileId: profileId, dataStore: dataStore)
+        webViewWrapper.extensionController = extensions.controller
 
         webViewWrapper.tabManager = tabManager
-        webViewWrapper.onNavigationFinished = { [weak tabManager, weak historyManager] tabId, url, title in
+        let extensionHost = extensions
+        webViewWrapper.onNavigationFinished = { [weak tabManager, weak historyManager, weak extensionHost] tabId, url, title in
             tabManager?.navigate(tab: tabId, to: url)
             tabManager?.updateTitle(tab: tabId, title: title)
             historyManager?.recordPageVisit(url: url, title: title)
+            extensionHost?.tabChanged(tabId, [.URL, .title, .loading])
+        }
+        self.workspace.captureInteractionStates = { [weak webViewWrapper] in
+            webViewWrapper?.interactionStates() ?? [:]
+        }
+        self.workspace.onTabPinned = { [weak self] id in
+            if LunaMaxPrefs.isOn(LunaMaxPrefs.tidyTitles) { self?.tidyTitle(id, reportErrors: false) }
         }
 
         tabManager.objectWillChange
@@ -60,24 +79,132 @@ final class ProfileSession: ObservableObject {
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
-        let tabId = tabManager.newTab(url: nil)
-        webViewWrapper.setActiveTab(tabId)
+        // Restore: guarantee an active tab, then lazily load it.
+        let store = self.workspace
+        if store.orderedTabIds.isEmpty {
+            _ = store.newTab(url: nil)
+        } else if store.activeTabId == nil, let first = store.orderedTabIds.first {
+            store.activate(first)
+        }
+        knownTabIds = Set(store.workspace.tabs.keys)
+        lastVisibleTabIds = store.visibleTabIds
+
+        // Switching to an existing tab that has no web view (restored, reset
+        // pinned tab, hibernated) loads it. Brand-new tabs are loaded by whoever
+        // created them, so they're skipped here.
+        store.$workspace
+            .sink { [weak self] ws in self?.workspaceWillChange(to: ws) }
+            .store(in: &cancellables)
+
+        if let tabId = store.activeTabId {
+            webViewWrapper.setActiveTab(tabId)
+            // Deferred so the restored page(s) load after the window has rendered.
+            let visible = store.visibleTabIds
+            DispatchQueue.main.async { [weak self] in visible.forEach { self?.ensureLoaded($0) } }
+        }
+        hibernator.start()
+        extensions.attach(self)
     }
 
     func activate() {
-        guard let tabId = tabManager.currentTab else { return }
+        guard let tabId = workspace.activeTabId else { return }
         webViewWrapper.setActiveTab(tabId)
-        guard let url = tabManager.tabURL[tabId] ?? nil,
+        workspace.visibleTabIds.forEach(ensureLoaded)
+        hibernator.start()
+    }
+
+    /// Creates and loads (or restores) the tab's web view if it has none.
+    func ensureLoaded(_ tabId: UUID) {
+        // The shell may already have created an empty web view while rendering.
+        if let wv = webViewWrapper.webViewIfLoaded(for: tabId), wv.url != nil || wv.isLoading { return }
+        guard let tab = workspace.tab(tabId),
+              let url = tab.url,
               url.absoluteString != "about:blank",
-              url.scheme != "luma",
-              webViewWrapper.webViewIfLoaded(for: tabId) == nil else { return }
-        webViewWrapper.load(url: url, in: tabId)
+              url.scheme != "luma" else { return }
+        if let state = tab.interactionState {
+            webViewWrapper.restore(interactionState: state, fallbackURL: url, in: tabId)
+            workspace.clearInteractionState(tabId)
+        } else {
+            webViewWrapper.load(url: url, in: tabId)
+        }
+    }
+
+    // MARK: - Luna Max
+
+    /// Replaces the tab's title with a short AI-chosen one.
+    func tidyTitle(_ id: UUID, reportErrors: Bool = true) {
+        guard let tab = workspace.tab(id) else { return }
+        let source = tab.title.isEmpty ? (tab.url?.host ?? "") : tab.title
+        guard !source.isEmpty else { return }
+        Task {
+            do {
+                let title = try await LunaMax.tidyTitle(for: source, url: tab.url)
+                workspace.setCustomTitle(id, title)
+            } catch {
+                if reportErrors { Self.showError(error, title: "Couldn't tidy the title") }
+            }
+        }
+    }
+
+    /// Groups the active space's loose Today tabs into folders.
+    func tidyToday() {
+        let space = workspace.activeSpace
+        let tabs: [LunaMax.TabSummary] = space.today.compactMap { node in
+            guard case .tab(let id) = node, let tab = workspace.tab(id) else { return nil }
+            return LunaMax.TabSummary(id: id, title: displayTitle(for: tab), host: tab.url?.host ?? "")
+        }
+        guard tabs.count >= 3 else { return }
+        Task {
+            do {
+                let groups = try await LunaMax.tidyGroups(for: tabs)
+                if groups.isEmpty { NSSound.beep() } else { workspace.applyTidyGroups(groups, inSpace: space.id) }
+            } catch {
+                Self.showError(error, title: "Couldn't tidy tabs")
+            }
+        }
+    }
+
+    static func showError(_ error: Error, title: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     func suspend() {
+        hibernator.stop()
+        workspace.flush()
         historyManager.flush()
         chatStore.flush()
         webViewWrapper.removeAllWebViews()
+        WorkspaceOwnership.release(workspace, profileId: profileId)
+    }
+
+    private func workspaceWillChange(to ws: Workspace) {
+        let visible = ws.visibleTabIds
+        let previouslyKnown = knownTabIds
+        knownTabIds = Set(ws.tabs.keys)
+        // Keep extensions' view of tabs current.
+        let previousActive = workspace.activeTabId
+        let opened = knownTabIds.subtracting(previouslyKnown)
+        let closed = previouslyKnown.subtracting(knownTabIds)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            opened.forEach(self.extensions.tabOpened)
+            closed.forEach(self.extensions.tabClosed)
+            if let active = ws.activeTabId, active != previousActive {
+                self.extensions.tabActivated(active, previous: previousActive)
+            }
+        }
+        guard visible != lastVisibleTabIds else { return }
+        lastVisibleTabIds = visible
+        let toLoad = visible.filter { previouslyKnown.contains($0) }
+        guard !toLoad.isEmpty else { return }
+        // `$workspace` fires before the value is stored; load once it's committed.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            toLoad.filter { self.workspace.visibleTabIds.contains($0) }.forEach(self.ensureLoaded)
+        }
     }
 }
 
@@ -152,6 +279,7 @@ final class BrowserSessionStore: ObservableObject {
 
     func flush() {
         sessions.values.forEach {
+            $0.workspace.flush()
             $0.historyManager.flush()
             $0.chatStore.flush()
         }

@@ -80,7 +80,8 @@ struct SmartSearchView: View {
     @State private var documentError: String? = nil
     @State private var includedOtherTabIds: [UUID] = []
     @State private var otherTabContexts: [UUID: (title: String?, text: String?)] = [:]
-    @State private var addTabsSheetPresented: Bool = false
+    @State private var addContextFromCard: Bool = false
+    @State private var addContextFromChat: Bool = false
 
     private var aiProvider: AIProvider { AIProvider(rawValue: aiProviderRaw) ?? .gemini }
     private var fontSize: CGFloat { CGFloat(fontSizeRaw) }
@@ -98,6 +99,8 @@ struct SmartSearchView: View {
                 EmptyView()
             }
         }
+        // The start page is dark glass in both appearances.
+        .environment(\.colorScheme, .dark)
         .onAppear {
             if !messages.isEmpty {
                 viewState = .aiChat
@@ -116,22 +119,6 @@ struct SmartSearchView: View {
             streamingTask = nil
             isSending = false
             isThinking = false
-        }
-        .sheet(isPresented: $addTabsSheetPresented) {
-            SmartAddTabSheet(
-                tabManager: tabManager,
-                currentTabId: tabId,
-                alreadyIncluded: Set(includedOtherTabIds),
-                onAdd: { id in
-                    if !includedOtherTabIds.contains(id) {
-                        includedOtherTabIds.append(id)
-                        loadTabContext(for: id)
-                    }
-                    if viewState == .idle {
-                        enterChatWithContext()
-                    }
-                }
-            )
         }
         .fileImporter(
             isPresented: $documentPickerPresented,
@@ -196,16 +183,16 @@ struct SmartSearchView: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 6) {
                             ForEach(includedOtherTabIds, id: \.self) { otherId in
-                                SmartContextChip(
-                                    label: otherTabLabel(tabId: otherId),
-                                    icon: "square.stack.3d.up",
+                                ContextChip(
+                                    kind: .tab(url: tabManager.tabURL[otherId] ?? nil, faviconURL: webViewWrapper.faviconURLByTab[otherId] ?? nil),
+                                    title: otherTabLabel(tabId: otherId),
                                     onRemove: { removeIncludedOtherTab(id: otherId) }
                                 )
                             }
                             ForEach(attachedDocuments) { doc in
-                                SmartContextChip(
-                                    label: doc.displayName,
-                                    icon: doc.displayName.lowercased().hasSuffix(".pdf") ? "doc.fill" : "doc.text.fill",
+                                ContextChip(
+                                    kind: .document(filename: doc.displayName),
+                                    title: doc.displayName,
                                     onRemove: { removeAttachedDocument(id: doc.id) }
                                 )
                             }
@@ -424,24 +411,50 @@ struct SmartSearchView: View {
         .clipShape(RoundedRectangle(cornerRadius: SmartTokens.cornerRadius, style: .continuous))
     }
 
+    /// "+" popover: toggle open tabs as context, or choose files.
+    private func addContextPopover(dismiss: @escaping () -> Void) -> some View {
+        AddContextPopover(
+            tabs: tabManager.tabOrder.filter { $0 != tabId }.compactMap { id in
+                guard let url = tabManager.tabURL[id] ?? nil, url.scheme?.hasPrefix("http") == true else { return nil }
+                return AddContextPopover.TabItem(id: id, title: otherTabLabel(tabId: id), url: url,
+                                                 faviconURL: webViewWrapper.faviconURLByTab[id] ?? nil)
+            },
+            included: Set(includedOtherTabIds),
+            onToggleTab: { id in
+                if includedOtherTabIds.contains(id) {
+                    removeIncludedOtherTab(id: id)
+                } else {
+                    includedOtherTabIds.append(id)
+                    loadTabContext(for: id)
+                    if viewState == .idle { enterChatWithContext() }
+                }
+            },
+            onChooseFiles: {
+                dismiss()
+                documentPickerPresented = true
+            }
+        )
+        // The start page is always dark glass; the popover follows the system.
+        .environment(\.colorScheme, NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? .dark : .light)
+    }
+
     private var chatInputBar: some View {
-        let isGlowActive = isInputFocused || !inputText.isEmpty
         return VStack(spacing: 0) {
             // Context chips row
             if !includedOtherTabIds.isEmpty || !attachedDocuments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(includedOtherTabIds, id: \.self) { otherId in
-                            SmartContextChip(
-                                label: otherTabLabel(tabId: otherId),
-                                icon: "square.stack.3d.up",
+                            ContextChip(
+                                kind: .tab(url: tabManager.tabURL[otherId] ?? nil, faviconURL: webViewWrapper.faviconURLByTab[otherId] ?? nil),
+                                title: otherTabLabel(tabId: otherId),
                                 onRemove: { removeIncludedOtherTab(id: otherId) }
                             )
                         }
                         ForEach(attachedDocuments) { doc in
-                            SmartContextChip(
-                                label: doc.displayName,
-                                icon: doc.displayName.lowercased().hasSuffix(".pdf") ? "doc.fill" : "doc.text.fill",
+                            ContextChip(
+                                kind: .document(filename: doc.displayName),
+                                title: doc.displayName,
                                 onRemove: { removeAttachedDocument(id: doc.id) }
                             )
                         }
@@ -454,23 +467,18 @@ struct SmartSearchView: View {
             }
 
             HStack(alignment: .bottom, spacing: 0) {
-                Menu {
-                    Button(action: { addTabsSheetPresented = true }) {
-                        Label("Tabs", systemImage: "square.stack.3d.up")
-                    }
-                    Button(action: { documentPickerPresented = true }) {
-                        Label("Files", systemImage: "doc.fill")
-                    }
-                } label: {
+                Button { addContextFromChat.toggle() } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundColor(SmartTokens.textSecondary)
-                        .frame(width: 32, height: 36)
-                        .contentShape(Rectangle())
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(Color.white.opacity(addContextFromChat ? 0.12 : 0)))
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+                .help("Add tabs or files")
+                .popover(isPresented: $addContextFromChat, arrowEdge: .top) { addContextPopover(dismiss: { addContextFromChat = false }) }
+                .padding(.bottom, 3)
 
                 SmartGrowingInput(
                     text: $inputText,
@@ -516,13 +524,7 @@ struct SmartSearchView: View {
             .padding(.vertical, 10)
             .frame(maxWidth: SmartTokens.chatMaxWidth)
             .lunaGlass(cornerRadius: 22, interactive: true)
-            .background(
-                AuroraGlow(
-                    shape: RoundedRectangle(cornerRadius: 22, style: .continuous),
-                    isActive: isGlowActive
-                )
-            )
-            .animation(.easeInOut(duration: 0.06), value: isGlowActive)
+            .focusShadow(isInputFocused)
         }
         .padding(.horizontal, 32)
         .padding(.bottom, 20)
@@ -531,7 +533,6 @@ struct SmartSearchView: View {
     // MARK: - Unified search card (Dia-style two-row layout)
 
     private var unifiedSearchCard: some View {
-        let isGlowActive = isInputFocused || !inputText.isEmpty
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return VStack(spacing: 0) {
@@ -577,14 +578,7 @@ struct SmartSearchView: View {
 
             // Row 2: action pills + submit
             HStack(spacing: 8) {
-                Menu {
-                    Button(action: { addTabsSheetPresented = true }) {
-                        Label("Add tabs", systemImage: "square.stack.3d.up")
-                    }
-                    Button(action: { documentPickerPresented = true }) {
-                        Label("Add files", systemImage: "doc.fill")
-                    }
-                } label: {
+                Button { addContextFromCard.toggle() } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "plus")
                             .font(.system(size: 11, weight: .semibold))
@@ -594,15 +588,12 @@ struct SmartSearchView: View {
                     .foregroundColor(SmartTokens.textSecondary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(
-                        Capsule(style: .continuous)
-                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                    )
+                    .background(Capsule(style: .continuous).fill(Color.white.opacity(addContextFromCard ? 0.1 : 0)))
+                    .overlay(Capsule(style: .continuous).stroke(Color.white.opacity(0.12), lineWidth: 1))
                     .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+                .popover(isPresented: $addContextFromCard, arrowEdge: .bottom) { addContextPopover(dismiss: { addContextFromCard = false }) }
 
                 Spacer()
 
@@ -615,13 +606,7 @@ struct SmartSearchView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .lunaGlass(cornerRadius: 22, interactive: true)
-        .background(
-            AuroraGlow(
-                shape: RoundedRectangle(cornerRadius: 22, style: .continuous),
-                isActive: isGlowActive
-            )
-        )
-        .animation(.easeInOut(duration: 0.1), value: isGlowActive)
+        .focusShadow(isInputFocused)
     }
 
     // MARK: - Dynamic submit button
@@ -1125,26 +1110,11 @@ struct SmartSearchView: View {
             }
 
             await MainActor.run {
-                switch aiProvider {
-                case .gemini:
-                    streamingTask = gemini.generateStreaming(
-                        prompt: prompt,
-                        context: finalContext,
-                        recentMessages: recentContext,
-                        onToken: onToken,
-                        onCompletion: onCompletion
-                    )
-                case .ollama:
-                    streamingTask = ollama.generateStreaming(
-                        baseURLString: ollamaBaseURL,
-                        model: ollamaModel,
-                        prompt: prompt,
-                        context: finalContext,
-                        recentMessages: recentContext,
-                        onToken: onToken,
-                        onCompletion: onCompletion
-                    )
-                }
+                streamingTask = LLMService.shared.stream(
+                    LLMRequest(prompt: prompt, context: finalContext, recentMessages: recentContext),
+                    onToken: onToken,
+                    onCompletion: onCompletion
+                )
             }
         }
         currentAITask = task
@@ -1267,24 +1237,15 @@ struct SmartSearchView: View {
 
         let titlePrompt = "Generate a 2-5 word tab title for this conversation. First message: \"\(query)\". Reply with ONLY the title, no quotes, no punctuation."
 
-        let handler: (Result<Data, Error>) -> Void = { result in
+        LLMService.shared.complete(LLMRequest(prompt: titlePrompt)) { result in
             DispatchQueue.main.async {
-                if case .success(let data) = result,
-                   let response = try? JSONDecoder().decode(LLMResponse.self, from: data) {
-                    let title = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if case .success(let raw) = result {
+                    let title = raw.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'")))
                     if !title.isEmpty && title.count < 40 {
                         tabManager.updateTitle(tab: id, title: title)
                     }
                 }
             }
-        }
-
-        switch aiProvider {
-        case .gemini:
-            gemini.generate(prompt: titlePrompt, context: nil, completion: handler)
-        case .ollama:
-            ollama.generate(baseURLString: ollamaBaseURL, model: ollamaModel,
-                            prompt: titlePrompt, context: nil, completion: handler)
         }
     }
 
@@ -1577,42 +1538,6 @@ private struct SmartChatBubble: View {
 
 // MARK: - Context chip
 
-private struct SmartContextChip: View {
-    let label: String
-    let icon: String
-    let onRemove: () -> Void
-    @State private var isHovered: Bool = false
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 10))
-                .foregroundColor(Color.white.opacity(0.6))
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundColor(Color.white.opacity(0.9))
-                .lineLimit(1)
-                .frame(maxWidth: 120, alignment: .leading)
-            if isHovered {
-                Button(action: onRemove) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.white.opacity(0.6))
-                        .frame(width: 14, height: 14)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .transition(.opacity.combined(with: .scale(scale: 0.8)))
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.12)))
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) { isHovered = hovering }
-        }
-    }
-}
 
 // MARK: - Growing input (self-contained, same pattern as CommandSurface)
 
@@ -1772,115 +1697,6 @@ private class SmartSubmitTextView: NSTextView {
 
 // MARK: - Add Tab Context Sheet
 
-private struct SmartAddTabSheet: View {
-    let tabManager: TabManager
-    let currentTabId: UUID?
-    let alreadyIncluded: Set<UUID>
-    let onAdd: (UUID) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    private var orderedTabs: [UUID] { tabManager.tabOrder }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Add tab context")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(Color.white.opacity(0.9))
-                Spacer()
-                Button("Done") { dismiss() }
-                    .buttonStyle(.plain)
-                    .foregroundColor(Color.white.opacity(0.75))
-            }
-            .padding(16)
-
-            Divider().opacity(0.2)
-
-            ScrollView {
-                VStack(spacing: 8) {
-                    if orderedTabs.isEmpty {
-                        Text("No tabs found.")
-                            .foregroundColor(Color.white.opacity(0.55))
-                            .padding(.top, 24)
-                    } else {
-                        ForEach(orderedTabs, id: \.self) { id in
-                            tabRow(id: id)
-                        }
-                    }
-                }
-                .padding(16)
-            }
-        }
-        .frame(minWidth: 420, minHeight: 360)
-        .background(
-            ZStack {
-                VisualEffectView(material: .hudWindow, blendingMode: .behindWindow, state: .active)
-                startPageGlassTint.opacity(startPageGlassTintOpacity)
-            }
-        )
-    }
-
-    @ViewBuilder
-    private func tabRow(id: UUID) -> some View {
-        let isCurrent = (currentTabId == id)
-        let isIncluded = alreadyIncluded.contains(id)
-        Button(action: {
-            guard !isCurrent, !isIncluded else { return }
-            onAdd(id)
-        }) {
-            HStack(spacing: 10) {
-                Image(systemName: isCurrent ? "globe" : "square.stack.3d.up")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Color.white.opacity(isCurrent ? 0.45 : 0.7))
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(tabTitle(id: id))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(Color.white.opacity(0.9))
-                        .lineLimit(1)
-                    if let subtitle = tabSubtitle(id: id) {
-                        Text(subtitle)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color.white.opacity(0.5))
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                if isCurrent {
-                    Text("Current")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color.white.opacity(0.45))
-                } else if isIncluded {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white.opacity(0.55))
-                } else {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white.opacity(0.75))
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.08)))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.08), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .disabled(isCurrent || isIncluded)
-        .opacity(isCurrent ? 0.7 : 1.0)
-    }
-
-    private func tabTitle(id: UUID) -> String {
-        if let t = tabManager.tabTitle[id], !t.isEmpty { return t }
-        if let url = tabManager.tabURL[id] ?? nil { return url.host ?? url.absoluteString }
-        return "Tab"
-    }
-
-    private func tabSubtitle(id: UUID) -> String? {
-        guard let url = tabManager.tabURL[id] ?? nil else { return nil }
-        return url.absoluteString.isEmpty ? nil : url.absoluteString
-    }
-}
 
 // MARK: - AttachedDocument
 

@@ -6,28 +6,6 @@ import PDFKit
 import UniformTypeIdentifiers
 import Combine
 
-// MARK: - Panel tokens (WCAG AA: body ≥4.5:1, secondary ≥3:1 on panel bg)
-
-private enum PanelTokens {
-    static let panelBg = Color(red: 0.09, green: 0.09, blue: 0.11)
-    static let panelBgSecondary = Color(red: 0.07, green: 0.07, blue: 0.09)
-    static let surfaceElevated = Color(white: 0.14)
-    /// Body text: ≥4.5:1 on panelBg
-    static let textPrimary = Color(white: 0.94)
-    /// Secondary text: ≥3:1 on panelBg
-    static let textSecondary = Color(white: 0.62)
-    static let textTertiary = Color(white: 0.50)
-    static let accent = Color(red: 0.45, green: 0.58, blue: 0.72)
-    static let accentDim = Color(red: 0.4, green: 0.5, blue: 0.62).opacity(0.15)
-    static let errorText = Color(red: 0.95, green: 0.55, blue: 0.55)
-    static let cornerRadius: CGFloat = 14
-    static let cornerRadiusLarge: CGFloat = 18
-}
-
-/// Glassmorphism: match start page style (dark grey glassmorphism)
-private let panelGlassTint = Color(red: 0.06, green: 0.06, blue: 0.07)
-private let panelGlassTintOpacity: Double = 0.82
-
 /// Right-side AI command panel (Cmd+E toggle). Per-tab chat with history.
 ///
 /// Redesign: clear hierarchy (header → context → conversation → input),
@@ -71,7 +49,8 @@ struct CommandSurfaceView: View {
     @State private var includeCurrentTab: Bool = true // Current tab is always included initially
     @State private var includedOtherTabIds: [UUID] = []
     @State private var otherTabContexts: [UUID: (title: String?, text: String?)] = [:]
-    @State private var addTabsSheetPresented: Bool = false
+    @State private var addContextPresented: Bool = false
+    @State private var isDropTargeted: Bool = false
     @State private var currentTabChipId: UUID = UUID()
 
     /// Tracks the editor's current natural height so the outer container can match it without any fixed frame.
@@ -88,26 +67,22 @@ struct CommandSurfaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             panelHeader()
+            Divider().opacity(0.5).padding(.horizontal, 14)
             conversationStream()
             inputArea()
         }
-        .background(
-            ZStack {
-                // Sidebar-grade material (Xcode assistant style): the window's
-                // backdrop shows through, content stays the focus.
-                VisualEffectView(
-                    material: .sidebar,
-                    blendingMode: .behindWindow,
-                    state: .active
-                )
-                panelGlassTint.opacity(panelGlassTintOpacity * 0.8)
-            }
-        )
-        .clipShape(RoundedRectangle(cornerRadius: PanelTokens.cornerRadiusLarge, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: PanelTokens.cornerRadiusLarge, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
-        )
+        // Floating glass panel (Desktop LUNA / Siri style).
+        .background {
+            RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.clear)
+                .lunaGlass(cornerRadius: 22)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.separator.opacity(0.5), lineWidth: 0.5))
+        .shadow(color: .black.opacity(0.28), radius: 22, y: 10)
+        .overlay { if isDropTargeted { FileDropHint() } }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleDocumentDrop(providers: providers)
+        }
         // Load page context only when the sidebar is toggled open (not on every URL change).
         // Auto-reloading on navigation can look like automated scraping to strict sites (e.g. Akamai).
         .onAppear {
@@ -121,19 +96,6 @@ struct CommandSurfaceView: View {
             streamingTask?.cancel()
             streamingTask = nil
             isSending = false
-        }
-        .sheet(isPresented: $addTabsSheetPresented) {
-            AddTabContextSheet(
-                tabManager: webViewWrapper.tabManager,
-                currentTabId: tabId,
-                alreadyIncluded: Set(includedOtherTabIds),
-                onAdd: { id in
-                    if !includedOtherTabIds.contains(id) {
-                        includedOtherTabIds.append(id)
-                        loadTabContext(for: id)
-                    }
-                }
-            )
         }
         .fileImporter(
             isPresented: $documentPickerPresented,
@@ -155,33 +117,32 @@ struct CommandSurfaceView: View {
     // MARK: - Header (minimal - note icon for new chat, close button)
 
     private func panelHeader() -> some View {
-        HStack {
-            Button(action: startNewChat) {
-                Image(systemName: "square.and.pencil")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(PanelTokens.textSecondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
+        HStack(spacing: 6) {
+            PanelIconButton(systemName: "square.and.pencil", help: "New Chat", action: startNewChat)
+            Spacer(minLength: 0)
+            VStack(spacing: 1) {
+                Text("Luna")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(modelLabel)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Start new chat")
-            .accessibilityHint("Clears conversation and context to start fresh")
-            Spacer()
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(PanelTokens.textSecondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.escape, modifiers: [])
-            .accessibilityLabel("Close AI panel")
+            Spacer(minLength: 0)
+            PanelIconButton(systemName: "xmark", help: "Close (Esc)", action: close)
+                .keyboardShortcut(.escape, modifiers: [])
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
     }
-    
+
+    private var modelLabel: String {
+        let service = LLMService.shared
+        let model = service.modelName
+        return model.isEmpty ? service.provider.displayName : "\(service.provider.displayName) · \(model)"
+    }
+
     private func startNewChat() {
         streamingTask?.cancel()
         streamingTask = nil
@@ -211,7 +172,7 @@ struct CommandSurfaceView: View {
     private func conversationStream() -> some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 14) {
                     if messages.isEmpty {
                         emptyConversationState()
                     } else {
@@ -248,64 +209,58 @@ struct CommandSurfaceView: View {
 
     private func emptyConversationState() -> some View {
         VStack(spacing: 14) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(
-                    LinearGradient(
-                        colors: [Color(red: 0.55, green: 0.72, blue: 1.0),
-                                 Color(red: 0.78, green: 0.58, blue: 1.0)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    )
-                )
-                .symbolRenderingMode(.hierarchical)
+            LunaOrb(size: 52)
+                .padding(.bottom, 4)
             Text("Ask about this page")
-                .font(.system(size: 15, weight: .medium))
-                .foregroundColor(Color.white.opacity(0.85))
-            Text("Summarize, explain, or find anything — with this page as context.")
+                .font(.system(size: 15, weight: .semibold))
+            Text("Summarize, explain, or find anything, with this page and any tabs or files you add as context.")
                 .font(.system(size: 12))
-                .foregroundColor(Color.white.opacity(0.45))
+                .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 240)
+                .frame(maxWidth: 250)
+            VStack(spacing: 6) {
+                ForEach(["Summarize this page", "What are the key takeaways?", "Explain this simply"], id: \.self) { suggestion in
+                    Button {
+                        inputText = suggestion
+                        sendCommand()
+                    } label: {
+                        Text(suggestion)
+                            .font(.system(size: 12))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Capsule().fill(.quaternary.opacity(0.7)))
+                            .overlay(Capsule().strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 6)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 60)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("No messages yet. Ask about this page.")
+        .padding(.vertical, 48)
+        .accessibilityElement(children: .contain)
     }
 
     private func loadingIndicator() -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            HStack(spacing: 4) {
-                ForEach(0..<3, id: \.self) { i in
-                    Circle()
-                        .fill(Color.white.opacity(0.4))
-                        .frame(width: 5, height: 5)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            Text("Thinking…")
-                .font(.system(size: chatFontSize))
-                .foregroundColor(Color.white.opacity(0.5))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityLabel("Assistant is thinking")
+        ThinkingLabel(fontSize: chatFontSize)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityLabel("Assistant is thinking")
     }
 
     private func errorInlineView(message: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 12))
-                .foregroundColor(PanelTokens.errorText)
+                .foregroundColor(Color.red)
             Text(message)
                 .font(.system(size: chatFontSize))
-                .foregroundColor(PanelTokens.errorText)
+                .foregroundColor(Color.red)
                 .lineLimit(3)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(PanelTokens.errorText.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: PanelTokens.cornerRadius, style: .continuous))
+        .background(Color.red.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .accessibilityLabel("Error: \(message)")
     }
 
@@ -315,69 +270,68 @@ struct CommandSurfaceView: View {
     // No internal scrolling — you always see everything before sending.
 
     private func inputArea() -> some View {
-        VStack(spacing: 0) {
-            // Context tabs row
+        VStack(spacing: 6) {
+            if let documentError {
+                Text(documentError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+            }
+            // Context chips
             if includeCurrentTab || !includedOtherTabIds.isEmpty || !attachedDocuments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         if includeCurrentTab {
-                            contextTab(
-                                id: currentTabChipId,
-                                label: thisPageLabel(),
-                                isCurrentTab: true,
-                                onRemove: { includeCurrentTab = false }
-                            )
+                            ContextChip(kind: .page(url: webViewWrapper.currentURL, faviconURL: tabId.flatMap { webViewWrapper.faviconURLByTab[$0] ?? nil }),
+                                        title: thisPageLabel(),
+                                        onRemove: { includeCurrentTab = false })
                         }
                         ForEach(includedOtherTabIds, id: \.self) { otherId in
-                            contextTab(
-                                id: otherId,
-                                label: otherTabLabel(tabId: otherId),
-                                isCurrentTab: false,
-                                onRemove: { removeIncludedOtherTab(id: otherId) },
-                                leadingSymbol: "square.stack.3d.up"
-                            )
+                            ContextChip(kind: .tab(url: webViewWrapper.tabManager?.tabURL[otherId] ?? nil,
+                                                   faviconURL: webViewWrapper.faviconURLByTab[otherId] ?? nil),
+                                        title: otherTabLabel(tabId: otherId),
+                                        onRemove: { removeIncludedOtherTab(id: otherId) })
                         }
                         ForEach(attachedDocuments) { doc in
-                            contextTab(
-                                id: doc.id,
-                                label: doc.displayName,
-                                isCurrentTab: false,
-                                onRemove: { removeAttachedDocument(id: doc.id) }
-                            )
+                            ContextChip(kind: .document(filename: doc.displayName),
+                                        title: doc.displayName,
+                                        onRemove: { removeAttachedDocument(id: doc.id) })
                         }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, 14)
                 }
-                .frame(height: 32)
-                .padding(.bottom, 8)
+                .frame(height: 28)
             }
 
-            let isGlowActive = isInputFocused || !inputText.isEmpty
-
-            HStack(alignment: .bottom, spacing: 0) {
-                Menu {
-                    Button(action: { addTabsSheetPresented = true }) {
-                        Label("Tabs", systemImage: "square.stack.3d.up")
-                    }
-                    Button(action: { documentPickerPresented = true }) {
-                        Label("Files", systemImage: "doc.fill")
-                    }
-                } label: {
+            HStack(alignment: .bottom, spacing: 4) {
+                Button { addContextPresented.toggle() } label: {
                     Image(systemName: "plus")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundColor(PanelTokens.textSecondary)
-                        .frame(width: 32, height: minInputHeight)
-                        .contentShape(Rectangle())
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, height: 30)
+                        .background(Circle().fill(.quaternary.opacity(addContextPresented ? 1 : 0)))
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
+                .help("Add tabs or files")
                 .accessibilityLabel("Add context")
-                .accessibilityHint("Choose tabs or files to add as context")
+                .popover(isPresented: $addContextPresented, arrowEdge: .top) {
+                    AddContextPopover(
+                        tabs: otherTabItems,
+                        included: Set(includedOtherTabIds),
+                        onToggleTab: toggleIncludedTab,
+                        onChooseFiles: {
+                            addContextPresented = false
+                            documentPickerPresented = true
+                        }
+                    )
+                }
+                .padding(.bottom, 3)
 
                 GrowingTextEditor(
                     text: $inputText,
-                    placeholder: "Ask a question about this page...",
+                    placeholder: "Ask anything…",
                     minHeight: minInputHeight,
                     fontSize: chatFontSize,
                     isFocused: $isInputFocused,
@@ -386,61 +340,45 @@ struct CommandSurfaceView: View {
                 )
                 .frame(maxWidth: .infinity)
 
-                if isSending {
-                    Button(action: stopStreaming) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(Color.white.opacity(0.85))
-                            .frame(width: 28, height: minInputHeight)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Stop generating")
-                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
-                } else {
-                    Button(action: sendCommand) {
-                        Image(systemName: "arrow.up")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(inputText.isEmpty
-                                             ? Color.white.opacity(0.3)
-                                             : Color.white.opacity(0.9))
-                            .frame(width: 28, height: minInputHeight)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(inputText.isEmpty)
-                    .keyboardShortcut(.return, modifiers: [])
-                    .accessibilityLabel("Send message")
-                    .transition(.opacity.combined(with: .scale(scale: 0.8)))
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .lunaGlass(cornerRadius: 20, interactive: true)
-            .background(
-                AuroraGlow(
-                    shape: RoundedRectangle(cornerRadius: 20, style: .continuous),
-                    isActive: isGlowActive,
-                    lineWidth: 1.5
+                ComposerSendButton(
+                    isSending: isSending,
+                    canSend: !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    onSend: sendCommand,
+                    onStop: stopStreaming
                 )
-            )
-            .animation(.easeInOut(duration: 0.06), value: isGlowActive)
+                .padding(.bottom, 4)
+            }
+            .padding(.leading, 6)
+            .padding(.trailing, 6)
+            .padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 22, style: .continuous).fill(.background.opacity(0.55)))
+            .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+            .focusShadow(isInputFocused)
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("Message input")
-            .accessibilityHint("Type your message. Enter to send.")
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
+        }
+        .padding(.top, 4)
+    }
+
+    /// Open tabs other than this one, for the "+" popover.
+    private var otherTabItems: [AddContextPopover.TabItem] {
+        guard let tm = webViewWrapper.tabManager else { return [] }
+        return tm.tabOrder.filter { $0 != tabId }.compactMap { id in
+            guard let url = tm.tabURL[id] ?? nil, url.scheme?.hasPrefix("http") == true else { return nil }
+            return AddContextPopover.TabItem(id: id, title: otherTabLabel(tabId: id), url: url,
+                                             faviconURL: webViewWrapper.faviconURLByTab[id] ?? nil)
         }
     }
-    
-    // Context tab component (mini tab showing file/tab name with hover trash icon)
-    private func contextTab(
-        id: UUID,
-        label: String,
-        isCurrentTab: Bool,
-        onRemove: @escaping () -> Void,
-        leadingSymbol: String? = nil
-    ) -> some View {
-        ContextTabView(label: label, isCurrentTab: isCurrentTab, leadingSymbol: leadingSymbol, onRemove: onRemove)
+
+    private func toggleIncludedTab(_ id: UUID) {
+        if includedOtherTabIds.contains(id) {
+            removeIncludedOtherTab(id: id)
+        } else {
+            includedOtherTabIds.append(id)
+            loadTabContext(for: id)
+        }
     }
 
     private struct ChatBubble: View {
@@ -449,19 +387,16 @@ struct CommandSurfaceView: View {
         let fontSize: CGFloat
         let onLinkTapped: (URL) -> Void
 
-        private let userBubbleColor = Color.white.opacity(0.15)
-        private let assistantTextColor = Color.white.opacity(0.95)
-        private let linkColor = Color(red: 0.4, green: 0.6, blue: 1.0)
+        private var linkColor: Color { isUser ? .white : .accentColor }
 
         var body: some View {
             HStack(alignment: .top, spacing: 0) {
                 if isUser { Spacer(minLength: 32) }
                 if isUser {
                     messageTextView
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .background(userBubbleColor)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(UserBubbleShape().fill(Color.accentColor))
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
@@ -521,7 +456,7 @@ struct CommandSurfaceView: View {
                 }
             }
             .font(.system(size: fontSize))
-            .foregroundColor(Color.white.opacity(0.95))
+            .foregroundStyle(.white)
             .textSelection(.enabled)
             .multilineTextAlignment(.leading)
             .lineSpacing(5)
@@ -577,13 +512,12 @@ struct CommandSurfaceView: View {
     }
 
     private func handleDocumentDrop(providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) else {
-            return false
-        }
-        _ = provider.loadObject(ofClass: URL.self) { url, _ in
-            guard let u = url else { return }
-            DispatchQueue.main.async {
-                addDocument(from: u)
+        let files = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !files.isEmpty else { return false }
+        for provider in files {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let u = url else { return }
+                DispatchQueue.main.async { addDocument(from: u) }
             }
         }
         return true
@@ -796,28 +730,11 @@ struct CommandSurfaceView: View {
             }
         }
 
-        switch aiProvider {
-        case .gemini:
-            streamingTask = gemini.generateStreaming(
-                prompt: prompt,
-                context: context,
-                recentMessages: recentContext,
-                conversationSummary: conversationSummary,
-                onToken: onToken,
-                onCompletion: onCompletion
-            )
-        case .ollama:
-            streamingTask = ollama.generateStreaming(
-                baseURLString: ollamaBaseURL,
-                model: ollamaModel,
-                prompt: prompt,
-                context: context,
-                recentMessages: recentContext,
-                conversationSummary: conversationSummary,
-                onToken: onToken,
-                onCompletion: onCompletion
-            )
-        }
+        streamingTask = LLMService.shared.stream(
+            LLMRequest(prompt: prompt, context: context, recentMessages: recentContext, conversationSummary: conversationSummary),
+            onToken: onToken,
+            onCompletion: onCompletion
+        )
     }
     
     private func checkAndSummarize() {
@@ -858,17 +775,7 @@ struct CommandSurfaceView: View {
                     }
                 }
             }
-            switch aiProvider {
-            case .gemini:
-                gemini.summarizeConversation(messages: messagesToProcess, completion: completion)
-            case .ollama:
-                ollama.summarizeConversation(
-                    baseURLString: ollamaBaseURL,
-                    model: ollamaModel,
-                    messages: messagesToProcess,
-                    completion: completion
-                )
-            }
+            LLMService.shared.summarize(messagesToProcess, completion: completion)
         }
     }
 
@@ -898,7 +805,7 @@ private struct GrowingTextEditor: View {
     @State private var textHeight: CGFloat = 36
 
     private var font: Font { .system(size: fontSize) }
-    private let placeholderColor = Color.white.opacity(0.5)
+    private let placeholderColor = Color(nsColor: .placeholderTextColor)
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -954,7 +861,7 @@ private struct MultilineTextField: NSViewRepresentable {
         tv.isRichText = false
         tv.drawsBackground = false
         tv.font = .systemFont(ofSize: fontSize)
-        tv.textColor = NSColor(white: 0.95, alpha: 1)
+        tv.textColor = .labelColor
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false
         tv.isAutomaticTextReplacementEnabled = false
@@ -1075,187 +982,8 @@ private struct AttachedDocument: Identifiable {
     }
 }
 
-// MARK: - Context Tab View
 
-private struct ContextTabView: View {
-    let label: String
-    let isCurrentTab: Bool
-    let leadingSymbol: String?
-    let onRemove: () -> Void
-    @State private var isHovered: Bool = false
-    
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: resolvedLeadingSymbol)
-                .font(.system(size: 10))
-                .foregroundColor(Color.white.opacity(0.6))
-            
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundColor(Color.white.opacity(0.9))
-                .lineLimit(1)
-                .frame(maxWidth: 120, alignment: .leading)
-            
-            if isHovered {
-                Button(action: onRemove) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 10))
-                        .foregroundColor(Color.white.opacity(0.7))
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .transition(.opacity.combined(with: .scale(scale: 0.8)))
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.white.opacity(0.12))
-        )
-        .onHover { hovering in
-            withAnimation(.easeInOut(duration: 0.15)) {
-                isHovered = hovering
-            }
-        }
-        .accessibilityLabel(isCurrentTab ? "Current tab: \(label)" : "File: \(label)")
-        .accessibilityHint("Hover to remove from context")
-    }
-
-    private var resolvedLeadingSymbol: String {
-        if let s = leadingSymbol { return s }
-        if isCurrentTab { return "globe" }
-        return "doc.fill"
-    }
-}
-
-// MARK: - Add tab context sheet
-
-private struct AddTabContextSheet: View {
-    let tabManager: TabManager?
-    let currentTabId: UUID?
-    let alreadyIncluded: Set<UUID>
-    let onAdd: (UUID) -> Void
-    @Environment(\.dismiss) private var dismiss
-
-    private var orderedTabs: [UUID] {
-        guard let tm = tabManager else { return [] }
-        return tm.tabOrder
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().opacity(0.2)
-            content
-        }
-        .frame(minWidth: 420, minHeight: 360)
-        .background(
-            ZStack {
-                VisualEffectView(material: .hudWindow, blendingMode: .behindWindow, state: .active)
-                panelGlassTint.opacity(panelGlassTintOpacity)
-            }
-        )
-    }
-
-    private var header: some View {
-        HStack {
-            Text("Add tab context")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(Color.white.opacity(0.9))
-            Spacer()
-            Button("Done") { dismiss() }
-                .buttonStyle(.plain)
-                .foregroundColor(Color.white.opacity(0.75))
-        }
-        .padding(16)
-    }
-
-    private var content: some View {
-        ScrollView {
-            VStack(spacing: 8) {
-                if orderedTabs.isEmpty {
-                    Text("No tabs found.")
-                        .foregroundColor(Color.white.opacity(0.55))
-                        .padding(.top, 24)
-                } else {
-                    ForEach(orderedTabs, id: \.self) { id in
-                        tabRow(id: id)
-                    }
-                }
-            }
-            .padding(16)
-        }
-    }
-
-    @ViewBuilder
-    private func tabRow(id: UUID) -> some View {
-        let isCurrent = (currentTabId == id)
-        let isIncluded = alreadyIncluded.contains(id)
-        Button(action: {
-            guard !isCurrent, !isIncluded else { return }
-            onAdd(id)
-        }) {
-            HStack(spacing: 10) {
-                Image(systemName: isCurrent ? "globe" : "square.stack.3d.up")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Color.white.opacity(isCurrent ? 0.45 : 0.7))
-                    .frame(width: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(tabTitle(id: id))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(Color.white.opacity(0.9))
-                        .lineLimit(1)
-                    if let subtitle = tabSubtitle(id: id) {
-                        Text(subtitle)
-                            .font(.system(size: 11))
-                            .foregroundColor(Color.white.opacity(0.5))
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                if isCurrent {
-                    Text("Current")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Color.white.opacity(0.45))
-                } else if isIncluded {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white.opacity(0.55))
-                } else {
-                    Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Color.white.opacity(0.75))
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.08)))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(isCurrent || isIncluded)
-        .opacity(isCurrent ? 0.7 : 1.0)
-    }
-
-    private func tabTitle(id: UUID) -> String {
-        guard let tm = tabManager else { return "Tab" }
-        if let title = tm.tabTitle[id], !title.isEmpty { return title }
-        if let url = tm.tabURL[id] ?? nil { return url.host ?? url.absoluteString }
-        return "Tab"
-    }
-
-    private func tabSubtitle(id: UUID) -> String? {
-        guard let tm = tabManager else { return nil }
-        guard let url = tm.tabURL[id] ?? nil else { return nil }
-        let s = url.absoluteString
-        return s.isEmpty ? nil : s
-    }
-}
+// MARK: - Document text extraction
 
 private enum DocumentTextExtractor {
     nonisolated static let supportedExtensions: Set<String> = ["pdf", "txt", "md", "json", "csv", "xml", "html"]
@@ -1276,5 +1004,32 @@ private enum DocumentTextExtractor {
 
     nonisolated static func isSupported(_ url: URL) -> Bool {
         supportedExtensions.contains(url.pathExtension.lowercased())
+    }
+}
+
+// MARK: - Thinking label
+
+/// "Thinking…" with a soft shimmer in the secondary text color.
+private struct ThinkingLabel: View {
+    let fontSize: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var phase: CGFloat = -1
+
+    var body: some View {
+        Text("Thinking…")
+            .font(.system(size: fontSize))
+            .foregroundStyle(.tertiary)
+            .overlay {
+                GeometryReader { geo in
+                    LinearGradient(colors: [.clear, .primary.opacity(0.55), .clear], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: geo.size.width * 0.6)
+                        .offset(x: phase * geo.size.width)
+                }
+                .mask(Text("Thinking…").font(.system(size: fontSize)))
+            }
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) { phase = 1.2 }
+            }
     }
 }
