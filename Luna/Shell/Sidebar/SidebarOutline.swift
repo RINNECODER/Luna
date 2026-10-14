@@ -41,6 +41,9 @@ struct SidebarActions {
     var close: (UUID) -> Void
     var newTab: () -> Void
     var store: WorkspaceStore
+    /// Luna Max: AI-rename a tab, and group Today tabs into folders.
+    var tidyTitle: (UUID) -> Void = { _ in }
+    var tidyToday: () -> Void = {}
 }
 
 /// Native source-list sidebar (NSOutlineView): pinned tabs, a divider, a New
@@ -281,7 +284,7 @@ struct SidebarOutline: NSViewRepresentable {
         // MARK: Delegate
 
         func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-            (item as? Item)?.kind == .divider ? 11 : 30
+            (item as? Item)?.kind == .divider ? 20 : 30
         }
 
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
@@ -346,7 +349,9 @@ struct SidebarOutline: NSViewRepresentable {
             guard let snapshot else { return }
             switch item.kind {
             case .divider:
-                cell.show(AnyView(SidebarDividerRow()), closeAction: nil)
+                let canTidy = snapshot.space.today.count >= 3
+                cell.show(AnyView(SidebarDividerRow()), closeAction: canTidy ? { [actions] in actions.tidyToday() } : nil,
+                          closeSymbol: "sparkles", closeHelp: "Tidy Today's tabs into folders")
             case .newTab:
                 cell.show(AnyView(SidebarNewTabRow()), closeAction: nil)
             case .node(let node):
@@ -390,6 +395,15 @@ struct SidebarOutline: NSViewRepresentable {
                     menu.addItem(MenuAction("New Folder with Tab") {
                         store.createFolder(containing: [id], at: loc)
                     })
+                }
+                menu.addItem(.separator())
+                menu.addItem(MenuAction("Rename Tab…") {
+                    let current = snapshot.tabs[id].map(displayTitle(for:)) ?? ""
+                    if let name = TextPrompt.name(title: "Rename Tab", initial: current) { store.setCustomTitle(id, name) }
+                })
+                menu.addItem(MenuAction("Tidy Title") { [actions] in actions.tidyTitle(id) })
+                if snapshot.tabs[id]?.customTitle != nil {
+                    menu.addItem(MenuAction("Use Page Title") { store.setCustomTitle(id, nil) })
                 }
                 if !snapshot.otherSpaces.isEmpty {
                     let sub = NSMenu()
@@ -482,9 +496,11 @@ final class SidebarCell: NSTableCellView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func show(_ view: AnyView, closeAction: (() -> Void)?, closeSymbol: String = "xmark") {
+    func show(_ view: AnyView, closeAction: (() -> Void)?, closeSymbol: String = "xmark", closeHelp: String = "Close Tab") {
         hosting.rootView = view
         self.closeAction = closeAction
+        closeButton.toolTip = closeHelp
+        closeButton.setAccessibilityLabel(closeHelp)
         closeButton.image = NSImage(systemSymbolName: closeSymbol, accessibilityDescription: "Close")?
             .withSymbolConfiguration(.init(pointSize: 10, weight: .semibold))
         updateCloseVisibility()

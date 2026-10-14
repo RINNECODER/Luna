@@ -65,6 +65,9 @@ final class ProfileSession: ObservableObject {
         self.workspace.captureInteractionStates = { [weak webViewWrapper] in
             webViewWrapper?.interactionStates() ?? [:]
         }
+        self.workspace.onTabPinned = { [weak self] id in
+            if LunaMaxPrefs.isOn(LunaMaxPrefs.tidyTitles) { self?.tidyTitle(id, reportErrors: false) }
+        }
 
         tabManager.objectWillChange
             .merge(with: webViewWrapper.objectWillChange, historyManager.objectWillChange, chatStore.objectWillChange)
@@ -118,6 +121,48 @@ final class ProfileSession: ObservableObject {
         } else {
             webViewWrapper.load(url: url, in: tabId)
         }
+    }
+
+    // MARK: - Luna Max
+
+    /// Replaces the tab's title with a short AI-chosen one.
+    func tidyTitle(_ id: UUID, reportErrors: Bool = true) {
+        guard let tab = workspace.tab(id) else { return }
+        let source = tab.title.isEmpty ? (tab.url?.host ?? "") : tab.title
+        guard !source.isEmpty else { return }
+        Task {
+            do {
+                let title = try await LunaMax.tidyTitle(for: source, url: tab.url)
+                workspace.setCustomTitle(id, title)
+            } catch {
+                if reportErrors { Self.showError(error, title: "Couldn't tidy the title") }
+            }
+        }
+    }
+
+    /// Groups the active space's loose Today tabs into folders.
+    func tidyToday() {
+        let space = workspace.activeSpace
+        let tabs: [LunaMax.TabSummary] = space.today.compactMap { node in
+            guard case .tab(let id) = node, let tab = workspace.tab(id) else { return nil }
+            return LunaMax.TabSummary(id: id, title: displayTitle(for: tab), host: tab.url?.host ?? "")
+        }
+        guard tabs.count >= 3 else { return }
+        Task {
+            do {
+                let groups = try await LunaMax.tidyGroups(for: tabs)
+                if groups.isEmpty { NSSound.beep() } else { workspace.applyTidyGroups(groups, inSpace: space.id) }
+            } catch {
+                Self.showError(error, title: "Couldn't tidy tabs")
+            }
+        }
+    }
+
+    static func showError(_ error: Error, title: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.runModal()
     }
 
     func suspend() {

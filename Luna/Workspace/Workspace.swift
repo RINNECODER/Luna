@@ -11,16 +11,20 @@ nonisolated struct Tab: Identifiable, Codable, Equatable {
     let id: UUID
     var url: URL?
     var title: String
+    /// User- or AI-chosen name shown instead of the page title (Tidy Titles, Rename).
+    var customTitle: String?
     /// Pinned/favorite tabs return here when "closed" (Arc-style reset).
     var savedURL: URL?
     var lastActiveAt: Date
     /// Opaque WKWebView back/forward state, captured on save and restored lazily.
     var interactionState: Data?
 
-    init(id: UUID = UUID(), url: URL?, title: String = "", savedURL: URL? = nil, lastActiveAt: Date = Date(), interactionState: Data? = nil) {
+    init(id: UUID = UUID(), url: URL?, title: String = "", customTitle: String? = nil, savedURL: URL? = nil,
+         lastActiveAt: Date = Date(), interactionState: Data? = nil) {
         self.id = id
         self.url = url
         self.title = title
+        self.customTitle = customTitle
         self.savedURL = savedURL
         self.lastActiveAt = lastActiveAt
         self.interactionState = interactionState

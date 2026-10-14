@@ -18,6 +18,8 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var workspace: Workspace
 
     let undoManager = UndoManager()
+    /// Called after a tab becomes pinned or a favorite (Luna Max tidy titles).
+    var onTabPinned: ((UUID) -> Void)?
     /// Called right before each save so live web views can contribute
     /// back/forward state (`WKWebView.interactionState`).
     var captureInteractionStates: (() -> [UUID: Data])?
@@ -196,11 +198,37 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func moveToFavorites(_ tabId: UUID, at index: Int? = nil) {
+        let wasPersistent = workspace.isPersistent(tabId)
         perform("Add to Favorites") { $0.addToFavorites(tabId, at: index) }
+        if !wasPersistent, workspace.isFavorite(tabId) { onTabPinned?(tabId) }
     }
 
     func pin(_ tabId: UUID, at index: Int? = nil) {
+        let wasPersistent = workspace.isPersistent(tabId)
         perform("Pin Tab") { $0.pin(tabId, at: index) }
+        if !wasPersistent, workspace.section(containing: tabId) == .pinned { onTabPinned?(tabId) }
+    }
+
+    /// nil restores the page's own title.
+    func setCustomTitle(_ tabId: UUID, _ title: String?) {
+        let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        perform("Rename Tab") { $0.tabs[tabId]?.customTitle = (trimmed?.isEmpty ?? true) ? nil : trimmed }
+    }
+
+    /// Groups tabs into new folders in one undoable step (Tidy Today).
+    func applyTidyGroups(_ groups: [LunaMax.Group], inSpace spaceId: UUID) {
+        guard !groups.isEmpty else { return }
+        perform("Tidy Tabs") { ws in
+            for group in groups {
+                let ids = group.tabIds.filter { ws.section(containing: $0) == .today && ws.spaceId(containing: $0) == spaceId }
+                guard ids.count >= 2 else { continue }
+                ids.forEach { ws.detachTabFromAnySplit($0) }
+                guard let first = ws.location(ofNode: ids[0]) else { continue }
+                var loc = NodeLocation(spaceId: spaceId, section: .today, parentFolderId: nil, index: first.parentFolderId == nil ? first.index : 0)
+                loc.index = min(loc.index, ws.spaces[ws.spaceIndex(spaceId)!].today.count)
+                ws.createFolder(name: group.name, containing: ids, at: loc)
+            }
+        }
     }
 
     func unpin(_ tabId: UUID) {

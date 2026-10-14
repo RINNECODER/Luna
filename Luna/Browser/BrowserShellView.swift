@@ -55,6 +55,8 @@ struct BrowserShellView: View {
     @State private var showGoogleAPIKeyHelpSheet: Bool = false
     @State private var showBrowserFindBar: Bool = false
     @State private var browserFindQuery: String = ""
+    /// Luna Max "Ask on Page" card for the current tab.
+    @State private var askOnPageVisible: Bool = false
     @ObservedObject private var downloadManager = DownloadManager.shared
     @State private var downloadIconScale: CGFloat = 1
     @State private var isFullScreen: Bool = false
@@ -275,6 +277,12 @@ struct BrowserShellView: View {
                     // Cmd+F: find in page (web tabs only; start page / AI chat handle it themselves)
                     if key == "f" {
                         guard !isCurrentTabStartOrAIChat else { return event }
+                        // Luna Max: holding ⌘F (key repeat) or ⌘⇧F opens Ask on Page.
+                        if LunaMaxPrefs.isOn(LunaMaxPrefs.askOnPage),
+                           event.isARepeat || event.modifierFlags.contains(.shift) {
+                            DispatchQueue.main.async { openAskOnPage() }
+                            return nil
+                        }
                         DispatchQueue.main.async {
                             showBrowserFindBar.toggle()
                             if !showBrowserFindBar {
@@ -325,6 +333,10 @@ struct BrowserShellView: View {
                 }
                 return event
             }
+        }
+        .onChange(of: tabManager.currentTab) { _, _ in
+            askOnPageVisible = false
+            web.linkPreview = nil
         }
         .onChange(of: tabManager.currentTab) { _, newId in
             if let id = newId {
@@ -424,7 +436,8 @@ struct BrowserShellView: View {
             goHome: { goHome() },
             toggleAI: { toggleAIPanel() },
             showDownloads: { showDownloadsHub = true },
-            showHistory: { navigateToHistory() }
+            showHistory: { navigateToHistory() },
+            askOnPage: { openAskOnPage() }
         )
     }
 
@@ -479,6 +492,16 @@ struct BrowserShellView: View {
         }
     }
 
+    private func openAskOnPage() {
+        guard !isCurrentTabStartOrAIChat else { return }
+        if showBrowserFindBar {
+            showBrowserFindBar = false
+            browserFindQuery = ""
+            if let id = tabManager.currentTab { web.clearFind(in: id) }
+        }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { askOnPageVisible = true }
+    }
+
     /// Home: show the start page in the current tab.
     private func goHome() {
         guard let id = tabManager.currentTab else { return newTab() }
@@ -498,7 +521,9 @@ struct BrowserShellView: View {
                 activate: { switchToTab($0) },
                 close: { closeTab($0) },
                 newTab: { newTab() },
-                store: session.workspace
+                store: session.workspace,
+                tidyTitle: { session.tidyTitle($0) },
+                tidyToday: { session.tidyToday() }
             ),
             onSubmitAddress: { applyAddressBarSubmit() },
             onToggleSidebar: toggleSidebar,
@@ -587,6 +612,28 @@ struct BrowserShellView: View {
                             .padding(.horizontal, 12)
                             .padding(.top, 12)
                             .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                        if let preview = web.linkPreview, preview.tabId == currentId {
+                            GeometryReader { geo in
+                                let width: CGFloat = 320
+                                let below = preview.rect.maxY + 8
+                                let y = below + 160 < geo.size.height ? below : max(8, preview.rect.minY - 168)
+                                LinkPreviewCard(url: preview.url, onOpen: {
+                                    web.linkPreview = nil
+                                    newTabWithURL(preview.url)
+                                }, onClose: { web.linkPreview = nil })
+                                .offset(x: min(max(8, preview.rect.minX), geo.size.width - width - 8), y: y)
+                                .transition(.opacity)
+                            }
+                            .id(preview.url)
+                        }
+                        if askOnPageVisible {
+                            AskOnPageBar(tabId: currentId, web: web, onClose: { askOnPageVisible = false })
+                                .padding(.top, 12)
+                                .padding(.trailing, 12)
+                                .frame(maxWidth: .infinity, alignment: .trailing)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                                .id(currentId)
                         }
                         if showBrowserFindBar {
                             BrowserFindBar(
@@ -1127,7 +1174,6 @@ private struct DownloadsHubView: View {
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 14)
-            .background(Color(white: 0.12))
 
             if downloadManager.recentDownloads.isEmpty {
                 VStack(spacing: 12) {
@@ -1147,15 +1193,33 @@ private struct DownloadsHubView: View {
                                 .font(.system(size: 20))
                                 .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(item.suggestedFilename)
+                                Text(item.displayName)
                                     .font(.system(size: 13, weight: .medium))
                                     .lineLimit(1)
                                     .truncationMode(.middle)
-                                Text(Self.dateFormatter.string(from: item.date))
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
+                                HStack(spacing: 6) {
+                                    Text(Self.dateFormatter.string(from: item.date))
+                                    if item.isTidying {
+                                        Text("· Tidying name…")
+                                    } else if let original = item.originalFileURL {
+                                        Text("· Renamed from \(original.lastPathComponent)").lineLimit(1).truncationMode(.middle)
+                                        Button("Undo") { downloadManager.undoTidy(item.id) }
+                                            .buttonStyle(.link)
+                                    }
+                                }
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            if item.originalFileURL == nil, !item.isTidying {
+                                Button {
+                                    downloadManager.tidy(item.id)
+                                } label: {
+                                    Image(systemName: "sparkles")
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Tidy file name")
+                            }
                             Button("Open") {
                                 downloadManager.open(item)
                             }
@@ -1179,8 +1243,7 @@ private struct DownloadsHubView: View {
                 .listStyle(.plain)
             }
         }
-        .frame(minWidth: 420, minHeight: 320)
-        .background(Color(white: 0.11))
+        .frame(minWidth: 480, minHeight: 320)
     }
 }
 

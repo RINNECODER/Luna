@@ -109,12 +109,12 @@ Sleek and native to macOS 27: system Liquid Glass materials, standard controls, 
 - [x] 1. Workspace model and persistence
 - [x] 2. Per-tab page state and hibernation
 - [x] 3. Sidebar shell (Top Tabs kept as a layout option)
-- [ ] A. AI input focus: no blue ring, small shadow
-- [ ] B. Helium layouts + appearance options + native Settings window
-- [ ] C. Profiles without the popover (native menus + Settings pane)
-- [ ] D. AI panel redesign (Desktop LUNA / Siri style) + nicer tab/document attachments
-- [ ] E. Cloud models: Sign in with ChatGPT, OpenAI and Anthropic API keys
-- [ ] F. Luna Max (Arc Max equivalent)
+- [x] A. AI input focus: no blue ring, small shadow
+- [x] B. Helium layouts + appearance options + native Settings window
+- [x] C. Profiles without the popover (native menus + Settings pane)
+- [x] D. AI panel redesign (Desktop LUNA / Siri style) + nicer tab/document attachments
+- [x] E. Cloud models: Sign in with ChatGPT, OpenAI and Anthropic API keys
+- [x] F. Luna Max (Arc Max equivalent)
 - [ ] 4. Drag and drop
 - [ ] 5. Split view rendering
 - [ ] 6. Spaces (swipe, themes, auto-archive)
@@ -150,7 +150,7 @@ Modeled on the Desktop LUNA Safari extension and the Siri app: floating rounded 
 - Gemini and Ollama stay.
 
 ### F. Luna Max (Arc Max equivalent)
-Ask on Page (hold ⌘F), link previews (hover a link and press Shift for an AI summary), tidy titles for pinned tabs, tidy downloads (rename files, one-click undo), Tidy Today (group Today tabs into folders), and asking AI from the command bar. Each feature toggles individually and uses the selected model.
+Ask on Page (hold ⌘F or ⌘⇧F), link previews (hover a link and press Shift for an AI summary), tidy titles for pinned tabs (plus Rename / Tidy Title in the tab menu), tidy downloads (rename files, one-click undo), Tidy Today (✦ on the Today divider groups tabs into folders, undoable). Each feature toggles individually in Settings → Luna Max and uses the selected model. Asking AI from the command bar ships with phase 7.
 
 ## Phases
 

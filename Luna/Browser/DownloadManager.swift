@@ -8,9 +8,14 @@ import Combine
 struct DownloadItem: Identifiable {
     let id: UUID
     let url: URL
-    let fileURL: URL
+    var fileURL: URL
     let suggestedFilename: String
     let date: Date
+    /// Set after Luna Max renamed the file; used for one-click undo.
+    var originalFileURL: URL?
+    var isTidying = false
+
+    var displayName: String { fileURL.lastPathComponent }
 
     init(id: UUID = UUID(), url: URL, fileURL: URL, suggestedFilename: String, date: Date = Date()) {
         self.id = id
@@ -44,6 +49,55 @@ final class DownloadManager: ObservableObject {
             if self.recentDownloads.count > self.maxRecent {
                 self.recentDownloads.removeLast()
             }
+            if LunaMaxPrefs.isOn(LunaMaxPrefs.tidyDownloads) { self.tidy(item.id) }
+        }
+    }
+
+    // MARK: - Luna Max: tidy downloads
+
+    /// Asks the model for a clearer name and renames the file in place.
+    func tidy(_ id: UUID) {
+        guard let index = recentDownloads.firstIndex(where: { $0.id == id }), !recentDownloads[index].isTidying else { return }
+        let item = recentDownloads[index]
+        recentDownloads[index].isTidying = true
+        Task {
+            let newName = try? await LunaMax.tidyFilename(for: item.fileURL.lastPathComponent, sourceURL: item.url)
+            guard let i = recentDownloads.firstIndex(where: { $0.id == id }) else { return }
+            recentDownloads[i].isTidying = false
+            guard let newName, newName != item.fileURL.lastPathComponent else { return }
+            if let renamed = moveFile(recentDownloads[i].fileURL, toName: newName) {
+                recentDownloads[i].originalFileURL = recentDownloads[i].originalFileURL ?? recentDownloads[i].fileURL
+                recentDownloads[i].fileURL = renamed
+            }
+        }
+    }
+
+    /// Restores the name the file was downloaded with.
+    func undoTidy(_ id: UUID) {
+        guard let i = recentDownloads.firstIndex(where: { $0.id == id }),
+              let original = recentDownloads[i].originalFileURL,
+              let restored = moveFile(recentDownloads[i].fileURL, toName: original.lastPathComponent) else { return }
+        recentDownloads[i].fileURL = restored
+        recentDownloads[i].originalFileURL = nil
+    }
+
+    /// Renames within the same folder, adding " (n)" if the name is taken.
+    private func moveFile(_ source: URL, toName name: String) -> URL? {
+        guard fileManager.fileExists(atPath: source.path) else { return nil }
+        let dir = source.deletingLastPathComponent()
+        let ext = (name as NSString).pathExtension
+        let base = (name as NSString).deletingPathExtension
+        var dest = dir.appendingPathComponent(name)
+        var n = 2
+        while fileManager.fileExists(atPath: dest.path), dest.standardizedFileURL != source.standardizedFileURL {
+            dest = dir.appendingPathComponent(ext.isEmpty ? "\(base) (\(n))" : "\(base) (\(n)).\(ext)")
+            n += 1
+        }
+        do {
+            try fileManager.moveItem(at: source, to: dest)
+            return dest
+        } catch {
+            return nil
         }
     }
 

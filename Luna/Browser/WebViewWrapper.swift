@@ -59,6 +59,14 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     
     /// When true, Google AI Studio showed "request is suspicious" — show in-app explanation (Google’s decision, not a Luma bug).
     @Published var googleSuspiciousErrorDetected: Bool = false
+
+    /// Luna Max link preview: the link the user is Shift-hovering, in web view coordinates.
+    struct LinkPreviewRequest: Equatable {
+        let tabId: UUID
+        let url: URL
+        let rect: CGRect
+    }
+    @Published var linkPreview: LinkPreviewRequest?
     
     /// TabManager reference for updating titles
     weak var tabManager: TabManager?
@@ -116,6 +124,57 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
             primaryTintByTab[tabId] = color
         } else {
             primaryTintByTab.removeValue(forKey: tabId)
+        }
+    }
+
+    private lazy var linkPreviewHandler: LinkPreviewMessageHandler = {
+        let h = LinkPreviewMessageHandler()
+        h.wrapper = self
+        return h
+    }()
+
+    /// Tracks the hovered link; pressing Shift shows a preview, which stays (so the pointer can
+    /// reach the card) until the user clicks in the page, scrolls, presses Escape or the window blurs.
+    static let linkPreviewScriptSource = """
+        (function(){
+            var handler = window.webkit && window.webkit.messageHandlers.lunaLinkPreview;
+            if (!handler) return;
+            var hovered = null, shown = false;
+            function linkAt(t) { return t && t.closest ? t.closest('a[href]') : null; }
+            function hide() { if (shown) { shown = false; handler.postMessage({type: 'hide'}); } }
+            document.addEventListener('mouseover', function(e) { hovered = linkAt(e.target); }, true);
+            document.addEventListener('mouseout', function(e) {
+                var a = linkAt(e.target);
+                if (a && a === hovered && !a.contains(e.relatedTarget)) { hovered = null; }
+            }, true);
+            document.addEventListener('keydown', function(e) {
+                if (e.key !== 'Shift' || e.repeat || !hovered) return;
+                var href = hovered.href;
+                if (!/^https?:/i.test(href)) return;
+                var r = hovered.getBoundingClientRect();
+                shown = true;
+                handler.postMessage({type: 'show', url: href, x: r.left, y: r.top, w: r.width, h: r.height});
+            }, true);
+            document.addEventListener('keydown', function(e) { if (e.key === 'Escape') hide(); }, true);
+            document.addEventListener('mousedown', hide, true);
+            window.addEventListener('scroll', hide, true);
+            window.addEventListener('blur', hide);
+        })();
+        """
+
+    fileprivate func handleLinkPreview(_ body: Any, from webView: WKWebView?) {
+        guard let webView, let tabId = tabId(for: webView), let dict = body as? [String: Any] else { return }
+        if dict["type"] as? String == "show",
+           LunaMaxPrefs.isOn(LunaMaxPrefs.linkPreviews),
+           NSEvent.modifierFlags.contains(.shift),
+           let href = dict["url"] as? String, let url = URL(string: href),
+           url.scheme == "http" || url.scheme == "https" {
+            let zoom = webView.pageZoom
+            let rect = CGRect(x: (dict["x"] as? Double ?? 0) * zoom, y: (dict["y"] as? Double ?? 0) * zoom,
+                              width: (dict["w"] as? Double ?? 0) * zoom, height: (dict["h"] as? Double ?? 0) * zoom)
+            linkPreview = LinkPreviewRequest(tabId: tabId, url: url, rect: rect)
+        } else if linkPreview?.tabId == tabId {
+            linkPreview = nil
         }
     }
 
@@ -325,6 +384,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         config.userContentController.addUserScript(themeScript)
         let googleErrorScript = WKUserScript(source: WebViewWrapper.googleSuspiciousErrorScriptSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         config.userContentController.addUserScript(googleErrorScript)
+        // Link previews run in an isolated content world: page scripts can't see or spoof this channel.
+        config.userContentController.add(linkPreviewHandler, contentWorld: .defaultClient, name: "lunaLinkPreview")
+        config.userContentController.addUserScript(WKUserScript(source: WebViewWrapper.linkPreviewScriptSource, injectionTime: .atDocumentEnd,
+                                                                forMainFrameOnly: true, in: .defaultClient))
         let wv = WKWebView(frame: .zero, configuration: config)
         // Use Safari UA for all requests to avoid bot detection on Akamai-protected sites.
         wv.customUserAgent = WebViewWrapper.safariUserAgent
@@ -1083,6 +1146,18 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         print("WebViewWrapper: Popup closed via window.close(), removing tab \(tabId)")
         tabManager?.closeTab(tabId)
         removeWebView(for: tabId)
+    }
+}
+
+// MARK: - Link preview message handler (isolated content world)
+
+private final class LinkPreviewMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var wrapper: WebViewWrapper?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        let body = message.body
+        let webView = message.webView
+        DispatchQueue.main.async { [weak self] in self?.wrapper?.handleLinkPreview(body, from: webView) }
     }
 }
 

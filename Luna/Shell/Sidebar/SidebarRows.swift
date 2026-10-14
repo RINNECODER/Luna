@@ -4,6 +4,7 @@ import SwiftUI
 // owns clicks, selection and menus. System fonts and colors throughout.
 
 func displayTitle(for tab: Tab) -> String {
+    if let custom = tab.customTitle, !custom.isEmpty { return custom }
     if !tab.title.isEmpty { return tab.title }
     guard let url = tab.url, url.absoluteString != "about:blank" else { return "New Tab" }
     if url.scheme == "luma" { return url.host == "history" ? "History" : "AI Chat" }

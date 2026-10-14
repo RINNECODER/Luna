@@ -40,6 +40,7 @@ struct SettingsView: View {
                 case .appearance: AppearanceSettingsView()
                 case .tabs: TabsSettingsView()
                 case .ai: ModelsSettingsView()
+                case .lunaMax: LunaMaxSettingsView()
                 case .search: SearchSettingsView()
                 case .about: AboutSettingsView()
                 }
@@ -56,7 +57,7 @@ struct SettingsView: View {
 }
 
 enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
-    case profiles, appearance, tabs, ai, search, about
+    case profiles, appearance, tabs, ai, lunaMax, search, about
 
     var id: String { rawValue }
 
@@ -66,6 +67,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .appearance: return "Appearance"
         case .tabs: return "Tabs"
         case .ai: return "AI & Models"
+        case .lunaMax: return "Luna Max"
         case .search: return "Search"
         case .about: return "About Luna"
         }
@@ -77,6 +79,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .appearance: return "paintbrush"
         case .tabs: return "square.on.square"
         case .ai: return "sparkles"
+        case .lunaMax: return "wand.and.stars"
         case .search: return "magnifyingglass"
         case .about: return "info.circle"
         }
@@ -90,6 +93,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
                                   "address", "url", "frameless", "frame", "home", "font", "text size"]
         case .tabs: return ["memory", "unload", "sleep", "hibernate", "inactive"]
         case .ai: return ["model", "gemini", "ollama", "openai", "chatgpt", "anthropic", "claude", "api key"]
+        case .lunaMax: return ["ask on page", "preview", "tidy", "rename", "downloads", "arc max", "folders"]
         case .search: return ["suggestions", "search engine", "privacy"]
         case .about: return ["version", "license"]
         }
@@ -195,6 +199,49 @@ private struct TabsSettingsView: View {
                     Text("Unload inactive tabs")
                     Text("Frees memory. Tabs playing media or using the camera or microphone stay loaded.")
                 }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Luna Max
+
+private struct LunaMaxSettingsView: View {
+    @AppStorage(LunaMaxPrefs.askOnPage) private var askOnPage = true
+    @AppStorage(LunaMaxPrefs.linkPreviews) private var linkPreviews = true
+    @AppStorage(LunaMaxPrefs.tidyTitles) private var tidyTitles = false
+    @AppStorage(LunaMaxPrefs.tidyDownloads) private var tidyDownloads = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: $askOnPage) {
+                    Text("Ask on Page")
+                    Text("Hold ⌘F, or press ⌘⇧F, to ask a question about the page you're on.")
+                }
+                Toggle(isOn: $linkPreviews) {
+                    Text("Link previews")
+                    Text("Hover over a link and press Shift to see a short summary of the page it opens.")
+                }
+            } header: {
+                Text("When you ask")
+            }
+
+            Section {
+                Toggle(isOn: $tidyTitles) {
+                    Text("Tidy titles for pinned tabs")
+                    Text("Gives tabs a short name when you pin them or add them to Favorites.")
+                }
+                Toggle(isOn: $tidyDownloads) {
+                    Text("Tidy downloads")
+                    Text("Renames downloaded files so they're easier to find. You can undo it in Downloads.")
+                }
+            } header: {
+                Text("Automatic")
+            } footer: {
+                Text("Automatic features send tab titles or file names to your AI provider. Tidy Today is always available from the ✦ button on the Today divider in the sidebar.")
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
