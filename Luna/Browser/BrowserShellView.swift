@@ -166,6 +166,11 @@ struct BrowserShellView: View {
             if topBarAutoHides { topBarPeekOverlay }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.9), value: sidebarVisible)
+        .focusedSceneValue(\.profileCommands, ProfileCommandContext(
+            activeProfileId: sessionStore.activeProfileId,
+            switchTo: switchToProfile,
+            openInNewWindow: openProfileInNewWindow
+        ))
         .alert("Confirm Action", isPresented: $showActionConfirm) {
             Button("Cancel", role: .cancel) { pendingAction = nil }
             Button("Execute") { executePendingAction() }
@@ -400,7 +405,7 @@ struct BrowserShellView: View {
     private var edgeTabListEnabled: Bool { (usesSidebar && !sidebarShown) || (!usesSidebar && frameless) }
 
     private var profileControl: some View {
-        ProfileSwitcherView(
+        ProfileMenu(
             profileManager: profileManager,
             activeProfileId: sessionStore.activeProfileId,
             onSwitch: switchToProfile,

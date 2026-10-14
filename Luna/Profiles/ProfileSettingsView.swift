@@ -1,212 +1,92 @@
-// Luna — Profiles Settings Tab
 import SwiftUI
 
+/// Settings → Profiles: rename, recolor, add and delete profiles.
 struct ProfileSettingsView: View {
     @ObservedObject private var profileManager = ProfileManager.shared
-    @State private var editingProfile: BrowserProfile? = nil
-    @State private var editName: String = ""
-    @State private var editColorId: String = ""
-    @State private var profileToDelete: BrowserProfile? = nil
-    @State private var showDeleteConfirm: Bool = false
+    @State private var pendingDelete: BrowserProfile?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                Text("Profiles")
-                    .font(.largeTitle)
-                    .padding(.bottom, 4)
-
-                Text("Each profile has its own browsing history, cookies, and login sessions. Switching profiles is like using a completely separate browser.")
-                    .font(.callout)
-                    .foregroundColor(.secondary)
-
-                // Profile list
-                VStack(spacing: 12) {
-                    ForEach(profileManager.profiles) { profile in
-                        profileCard(profile)
-                    }
+        Form {
+            Section {
+                ForEach(profileManager.profiles) { profile in
+                    ProfileRow(
+                        profile: profile,
+                        canDelete: profileManager.profiles.count > 1,
+                        onDelete: { pendingDelete = profile }
+                    )
                 }
-
-                Divider()
-
-                // Add new profile button
-                Button(action: addNewProfile) {
-                    Label("Add Profile", systemImage: "plus.circle.fill")
-                        .font(.system(size: 14, weight: .medium))
-                }
-                .buttonStyle(.borderedProminent)
-
-                Spacer()
+            } footer: {
+                Text("Each profile keeps its own cookies, logins, history, tabs and AI chats, like a separate browser.")
+                    .foregroundStyle(.secondary)
             }
-            .padding(24)
+
+            Section {
+                Button("Add Profile…") {
+                    _ = ProfileActions.createProfile(manager: profileManager)
+                }
+            }
         }
-        // Inline edit sheet
-        .sheet(item: $editingProfile) { profile in
-            editSheet(for: profile)
-        }
-        // Delete confirmation (isPresented + presenting — item: overload not on all macOS SDKs)
+        .formStyle(.grouped)
         .confirmationDialog(
-            "Delete profile?",
-            isPresented: $showDeleteConfirm,
+            "Delete “\(pendingDelete?.name ?? "")”?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
             titleVisibility: .visible,
-            presenting: profileToDelete
+            presenting: pendingDelete
         ) { profile in
-            Button("Delete Profile & Data", role: .destructive) {
-                profileManager.deleteProfile(profileId: profile.id) {
-                    showDeleteConfirm = false
-                }
+            Button("Delete Profile and Data", role: .destructive) {
+                profileManager.deleteProfile(profileId: profile.id) {}
+                pendingDelete = nil
             }
-            Button("Cancel", role: .cancel) {
-                showDeleteConfirm = false
-            }
-        } message: { profile in
-            Text("Permanently delete \"\(profile.name)\"? All browsing history, cookies, and login sessions for this profile will be removed. This cannot be undone.")
-        }
-        .onChange(of: showDeleteConfirm) { _, isShown in
-            if !isShown { profileToDelete = nil }
+        } message: { _ in
+            Text("Its history, cookies, logins, tabs and chats are removed. This can't be undone.")
         }
     }
+}
 
-    // MARK: - Profile card
+private struct ProfileRow: View {
+    let profile: BrowserProfile
+    let canDelete: Bool
+    let onDelete: () -> Void
 
-    private func profileCard(_ profile: BrowserProfile) -> some View {
-        HStack(spacing: 14) {
-            // Avatar
-            ZStack {
-                Circle()
-                    .fill(profile.profileColor.color)
-                    .frame(width: 40, height: 40)
-                Text(profile.name.prefix(1).uppercased())
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.white)
-            }
+    @ObservedObject private var profileManager = ProfileManager.shared
+    @State private var name: String = ""
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(profile.name)
-                        .font(.system(size: 14, weight: .semibold))
-                    if profile.id == profileManager.lastActiveProfileId {
-                        Text("Last used")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Capsule().fill(profile.profileColor.color))
-                    }
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(nsImage: ProfileAvatar.image(for: profile, size: 24))
+            TextField("Name", text: $name, prompt: Text("Name"))
+                .labelsHidden()
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .onSubmit(commitName)
+                .onAppear { name = profile.name }
+                .onChange(of: profile.name) { _, new in name = new }
+            Picker("Color", selection: Binding(
+                get: { profile.colorId },
+                set: { profileManager.recolor(profileId: profile.id, colorId: $0) }
+            )) {
+                ForEach(ProfileColor.presets) { color in
+                    Label { Text(color.id.capitalized) } icon: { Image(nsImage: ProfileAvatar.swatch(color)) }
+                        .tag(color.id)
                 }
-                Text(profile.isDefault ? "Default profile" : "Custom profile")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            // Edit button
-            Button("Edit") {
-                editName = profile.name
-                editColorId = profile.colorId
-                editingProfile = profile
+            .labelsHidden()
+            .fixedSize()
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
             }
-            .buttonStyle(.bordered)
-
-            // Delete (disabled for last profile)
-            if profileManager.profiles.count > 1 {
-                Button(role: .destructive) {
-                    profileToDelete = profile
-                    showDeleteConfirm = true
-                } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 13))
-                }
-                .buttonStyle(.bordered)
-                .foregroundColor(.red)
-            }
+            .buttonStyle(.borderless)
+            .disabled(!canDelete)
+            .help(canDelete ? "Delete Profile" : "Luna needs at least one profile")
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.gray.opacity(0.08))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10)
-                .stroke(
-                    profile.id == profileManager.lastActiveProfileId
-                        ? profile.profileColor.color.opacity(0.5)
-                        : Color.clear,
-                    lineWidth: 1.5
-                )
-        )
+        .onDisappear(perform: commitName)
     }
 
-    // MARK: - Edit sheet
-
-    private func editSheet(for profile: BrowserProfile) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Edit Profile")
-                .font(.title2.bold())
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Name")
-                    .font(.subheadline.weight(.medium))
-                TextField("Profile name", text: $editName)
-                    .textFieldStyle(.roundedBorder)
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Color")
-                    .font(.subheadline.weight(.medium))
-
-                let columns = Array(repeating: GridItem(.fixed(36), spacing: 10), count: 5)
-                LazyVGrid(columns: columns, spacing: 10) {
-                    ForEach(ProfileColor.presets) { color in
-                        Button(action: { editColorId = color.id }) {
-                            ZStack {
-                                Circle()
-                                    .fill(color.color)
-                                    .frame(width: 32, height: 32)
-                                if editColorId == color.id {
-                                    Circle()
-                                        .stroke(Color.primary.opacity(0.8), lineWidth: 2.5)
-                                        .frame(width: 32, height: 32)
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundColor(.white)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            Spacer()
-
-            HStack {
-                Button("Cancel") { editingProfile = nil }
-                    .buttonStyle(.bordered)
-                Spacer()
-                Button("Save") {
-                    let name = editName.trimmingCharacters(in: .whitespaces)
-                    guard !name.isEmpty else { return }
-                    profileManager.rename(profileId: profile.id, to: name)
-                    profileManager.recolor(profileId: profile.id, colorId: editColorId)
-                    editingProfile = nil
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(editName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
+    private func commitName() {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { name = profile.name } else if trimmed != profile.name {
+            profileManager.rename(profileId: profile.id, to: trimmed)
         }
-        .padding(24)
-        .frame(width: 340, height: 380)
-    }
-
-    // MARK: - Add new profile
-
-    private func addNewProfile() {
-        let count = profileManager.profiles.count + 1
-        let colorId = ProfileColor.presets[count % ProfileColor.presets.count].id
-        let p = profileManager.addProfile(name: "Profile \(count)", colorId: colorId)
-        editName = p.name
-        editColorId = p.colorId
-        editingProfile = p
     }
 }

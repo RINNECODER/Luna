@@ -21,6 +21,7 @@ struct LunaApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1200, height: 800)
+        .commands { ProfileCommands() }
         Settings {
             SettingsView()
         }

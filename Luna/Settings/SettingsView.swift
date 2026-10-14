@@ -2,6 +2,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import Combine
 
 /// Settings window: category sidebar, search, and grouped forms (macOS
 /// System Settings style, mirroring Helium's categories).
@@ -46,6 +47,11 @@ struct SettingsView: View {
             .navigationTitle((selection ?? .appearance).title)
         }
         .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 600)
+        .onReceive(SettingsRouter.shared.$requestedPane.compactMap { $0 }) { pane in
+            query = ""
+            selection = pane
+            SettingsRouter.shared.requestedPane = nil
+        }
     }
 }
 

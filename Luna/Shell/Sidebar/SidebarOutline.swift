@@ -411,7 +411,7 @@ struct SidebarOutline: NSViewRepresentable {
                 menu.addItem(MenuAction(pinned ? "Reset Tab" : "Close Tab") { [actions] in actions.close(id) })
             case .folder(let f):
                 menu.addItem(MenuAction("Rename Folder…") {
-                    if let name = Self.promptForName(title: "Rename Folder", initial: f.name) {
+                    if let name = TextPrompt.name(title: "Rename Folder", initial: f.name) {
                         store.renameFolder(f.id, to: name)
                     }
                 })
@@ -419,20 +419,6 @@ struct SidebarOutline: NSViewRepresentable {
             case .split(let g):
                 menu.addItem(MenuAction("Separate Split View") { store.dissolveSplit(g.id) })
             }
-        }
-
-        static func promptForName(title: String, initial: String) -> String? {
-            let alert = NSAlert()
-            alert.messageText = title
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Cancel")
-            let field = NSTextField(string: initial)
-            field.frame = NSRect(x: 0, y: 0, width: 240, height: 24)
-            alert.accessoryView = field
-            alert.window.initialFirstResponder = field
-            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-            let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            return name.isEmpty ? nil : name
         }
     }
 }

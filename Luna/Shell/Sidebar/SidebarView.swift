@@ -89,7 +89,7 @@ struct SidebarView: View {
                     .help(space.name)
                     .contextMenu {
                         Button("Rename Space…") {
-                            if let name = SidebarOutline.Coordinator.promptForName(title: "Rename Space", initial: space.name) {
+                            if let name = TextPrompt.name(title: "Rename Space", initial: space.name) {
                                 store.updateSpace(space.id) { $0.name = name }
                             }
                         }
@@ -102,7 +102,7 @@ struct SidebarView: View {
                 }
             }
             ToolbarIconButton(systemName: "plus", help: "New Space") {
-                if let name = SidebarOutline.Coordinator.promptForName(title: "New Space", initial: "Space \(store.workspace.spaces.count + 1)") {
+                if let name = TextPrompt.name(title: "New Space", initial: "Space \(store.workspace.spaces.count + 1)") {
                     store.createSpace(name: name)
                     actions.newTab()
                 }
