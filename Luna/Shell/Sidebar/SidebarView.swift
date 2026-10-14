@@ -8,6 +8,8 @@ struct SidebarView: View {
     @Binding var addressText: String
     var addressFocused: FocusState<Bool>.Binding
     let isFullScreen: Bool
+    /// False while slid off-screen.
+    var isOnScreen: Bool = true
     let actions: SidebarActions
     let onSubmitAddress: () -> Void
     let onToggleSidebar: () -> Void
@@ -66,6 +68,7 @@ struct SidebarView: View {
             text: $addressText,
             focused: addressFocused,
             loadingProgress: store.activeTabId.flatMap { web.loadingProgressByTab[$0] },
+            reportsAnchor: isOnScreen,
             onSubmit: onSubmitAddress
         )
     }

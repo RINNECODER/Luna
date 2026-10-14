@@ -18,6 +18,8 @@ struct AddressField: View {
     var loadingProgress: Double?
     var centered: Bool = false
     var height: CGFloat = 30
+    /// Off-screen fields (a hidden sidebar) must not claim the suggestions popup.
+    var reportsAnchor: Bool = true
     let onSubmit: () -> Void
 
     @AppStorage(ChromePrefs.minimalURL) private var minimalURL = true
@@ -84,7 +86,7 @@ struct AddressField: View {
         .focusShadow(isFocused)
         .contentShape(Rectangle())
         .onTapGesture { focused.wrappedValue = true }
-        .anchorPreference(key: AddressFieldAnchorKey.self, value: .bounds) { $0 }
+        .anchorPreference(key: AddressFieldAnchorKey.self, value: .bounds) { reportsAnchor ? $0 : nil }
         .background(NonDraggableWindowView())
     }
 }

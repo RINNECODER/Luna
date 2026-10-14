@@ -103,14 +103,7 @@ struct BrowserShellView: View {
 
             GeometryReader { geometry in
                 HStack(spacing: 0) {
-                    if sidebarShown {
-                        sidebar
-                            .frame(width: sidebarWidth)
-                            .overlay(alignment: .trailing) { SidebarResizeHandle(width: $sidebarWidth) }
-                            .transition(.move(edge: .leading).combined(with: .opacity))
-                    }
-
-                    // Main browser content
+                    // Main browser content; the sliding sidebar sits over this padding when docked.
                     VStack(spacing: 0) {
                         if showsTopChrome {
                             topChrome(showsTabs: !frameless)
@@ -118,6 +111,7 @@ struct BrowserShellView: View {
                         framedContent
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.leading, sidebarShown ? sidebarWidth : 0)
                     .animation(.easeInOut(duration: 0.08), value: tabManager.currentTab)
 
                     // ─── AI side panel (hidden on start page and AI chat) ────────
@@ -165,14 +159,25 @@ struct BrowserShellView: View {
                         }
                     }
                 }
+                .overlay(alignment: .leading) {
+                    if usesSidebar || edgeTabListEnabled { slidingSidebar }
+                }
+                .overlay(alignment: .leading) {
+                    // Thin hot zone at the left edge reveals a hidden sidebar.
+                    if edgeTabListEnabled && !sidebarPeeking {
+                        Color.clear
+                            .frame(width: 8)
+                            .frame(maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onHover { if $0 { sidebarPeeking = true } }
+                    }
+                }
+                .animation(Self.chromeAnimation, value: sidebarState)
             }
         }
         .ignoresSafeArea(.container, edges: .top)
         .overlayPreferenceValue(AddressFieldAnchorKey.self) { anchor in
             suggestionsOverlay(anchor: anchor)
-        }
-        .overlay(alignment: .leading) {
-            if edgeTabListEnabled { sidebarPeekOverlay.ignoresSafeArea(.container, edges: .top) }
         }
         .overlay(alignment: .top) {
             if topBarAutoHides {
@@ -181,7 +186,6 @@ struct BrowserShellView: View {
                 windowButtonsHotZone.ignoresSafeArea(.container, edges: .top)
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.9), value: sidebarVisible)
         .overlay(alignment: .top) {
             if let profile = profileToast {
                 HStack(spacing: 8) {
@@ -562,26 +566,30 @@ struct BrowserShellView: View {
         }
     }
 
-    @ViewBuilder
+    /// Frameless top bar: always present, sliding in from above on hover.
     private var topBarPeekOverlay: some View {
-        if topBarPeeking {
+        let height = TopChromeView.height(for: layout, showsTabs: false)
+        return ZStack(alignment: .top) {
             topChrome(showsTabs: false)
                 .background(ZStack {
                     VisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active)
                     activeProfile.profileColor.color.opacity(0.14)
                 })
-                .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
+                .shadow(color: .black.opacity(topBarPeeking ? 0.2 : 0), radius: 8, y: 2)
+                .offset(y: topBarPeeking ? 0 : -(height + 16))
+                .allowsHitTesting(topBarPeeking)
                 .onHover { inside in
-                    if !inside && !addressBarFocused { topBarPeeking = false }
+                    if topBarPeeking && !inside && !addressBarFocused { topBarPeeking = false }
                 }
-                .transition(.move(edge: .top).combined(with: .opacity))
-        } else {
-            Color.clear
-                .frame(height: 6)
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-                .onHover { if $0 { topBarPeeking = true } }
+            if !topBarPeeking {
+                Color.clear
+                    .frame(height: 6)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .onHover { if $0 { topBarPeeking = true } }
+            }
         }
+        .animation(Self.chromeAnimation, value: topBarPeeking)
     }
 
     private func openAskOnPage() {
@@ -609,6 +617,7 @@ struct BrowserShellView: View {
             addressText: $addressBarText,
             addressFocused: $addressBarFocused,
             isFullScreen: isFullScreen,
+            isOnScreen: sidebarState != .hidden,
             actions: SidebarActions(
                 activate: { switchToTab($0) },
                 close: { closeTab($0) },
@@ -625,32 +634,43 @@ struct BrowserShellView: View {
         )
     }
 
-    /// Hidden sidebar: a thin hot zone at the left edge reveals it over the content.
-    @ViewBuilder
-    private var sidebarPeekOverlay: some View {
-        if sidebarPeeking {
-            sidebar
-                .frame(width: sidebarWidth)
-                .frame(maxHeight: .infinity)
-                .background(ZStack {
+    /// Fast, smooth spring shared by the sidebar and top bar slides.
+    static let chromeAnimation = Animation.spring(response: 0.26, dampingFraction: 0.92)
+
+    private enum SidebarState: Equatable { case docked, peeking, hidden }
+
+    private var sidebarState: SidebarState {
+        if sidebarShown { return .docked }
+        return sidebarPeeking && edgeTabListEnabled ? .peeking : .hidden
+    }
+
+    /// One sidebar instance that slides between docked, floating over the page
+    /// (peeking) and off-screen, so it animates instead of popping in and out.
+    private var slidingSidebar: some View {
+        let state = sidebarState
+        let floating = state != .docked
+        return sidebar
+            .frame(width: sidebarWidth)
+            .frame(maxHeight: .infinity)
+            .background {
+                ZStack {
                     VisualEffectView(material: .sidebar, blendingMode: .withinWindow, state: .active)
                     activeProfile.profileColor.color.opacity(0.14)
-                })
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .shadow(color: .black.opacity(0.25), radius: 12, x: 2)
-                .padding(.vertical, 6)
-                .padding(.leading, 6)
-                .onHover { inside in
-                    if !inside && !addressBarFocused { sidebarPeeking = false }
                 }
-                .transition(.move(edge: .leading).combined(with: .opacity))
-        } else {
-            Color.clear
-                .frame(width: 8)
-                .frame(maxHeight: .infinity)
-                .contentShape(Rectangle())
-                .onHover { if $0 { sidebarPeeking = true } }
-        }
+                .opacity(floating ? 1 : 0)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: floating ? 10 : 0, style: .continuous))
+            .shadow(color: .black.opacity(floating ? 0.25 : 0), radius: 12, x: 2)
+            .overlay(alignment: .trailing) {
+                if state == .docked { SidebarResizeHandle(width: $sidebarWidth) }
+            }
+            .padding(.vertical, floating ? 6 : 0)
+            .padding(.leading, floating ? 6 : 0)
+            .offset(x: state == .hidden ? -(sidebarWidth + 24) : 0)
+            .allowsHitTesting(state != .hidden)
+            .onHover { inside in
+                if state == .peeking && !inside && !addressBarFocused { sidebarPeeking = false }
+            }
     }
 
     private func toggleSidebar() {
