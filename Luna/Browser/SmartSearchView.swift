@@ -52,7 +52,9 @@ struct SmartSearchView: View {
     @State private var hasGeneratedTitle: Bool = false
     @State private var searchBarOffset: CGFloat = 0
     @State private var previousInputLength: Int = 0
-    @State private var currentIntent: QueryIntent = .ai
+    @State private var currentIntent: QueryIntent = .search
+    /// True while an ambiguous query is being routed by the model.
+    @State private var isRouting: Bool = false
     @State private var streamingTask: Task<Void, Never>? = nil
 
     // Thinking steps
@@ -166,6 +168,8 @@ struct SmartSearchView: View {
         GeometryReader { geo in
             let topOffset = geo.size.height * 0.32
             VStack(spacing: 0) {
+                AsciiMoon(diameter: 170, isBusy: isRouting)
+                    .padding(.bottom, -6)
                 // Quiet greeting above the bar (Siri / ChatGPT-app style)
                 Text(Self.greeting())
                     .font(.system(size: 28, weight: .semibold, design: .rounded))
@@ -539,6 +543,12 @@ struct SmartSearchView: View {
             // Row 1: icon + text field
             HStack(spacing: 8) {
                 Image(systemName: currentIntent == .ai ? "bubble.left.fill" : "magnifyingglass")
+                    .background(
+                        // ⌘↩ always opens chat, whatever the router thinks.
+                        Button("") { forceChat() }
+                            .keyboardShortcut(.return, modifiers: .command)
+                            .hidden()
+                    )
                     .font(.system(size: 14, weight: .medium))
                     .foregroundColor(SmartTokens.textTertiary)
                     .frame(width: 20)
@@ -556,7 +566,7 @@ struct SmartSearchView: View {
                         handlePasteDetection(newValue)
                         let t = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
                         let hasContext = !attachedDocuments.isEmpty || !includedOtherTabIds.isEmpty
-                        currentIntent = t.isEmpty ? .ai : (hasContext ? .ai : QueryClassifier.classify(t))
+                        currentIntent = t.isEmpty ? .search : (hasContext ? .ai : QueryClassifier.classify(t))
                     }
             }
             .padding(.horizontal, 14)
@@ -624,10 +634,14 @@ struct SmartSearchView: View {
         } else {
             Button(action: { submitWithSelection() }) {
                 HStack(spacing: 4) {
-                    Text(currentIntent == .ai ? "Chat" : "Google")
-                        .font(.system(size: 12, weight: .semibold))
-                    Image(systemName: "return")
-                        .font(.system(size: 10, weight: .semibold))
+                    if isRouting {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Text(currentIntent == .ai ? "Chat" : "Google")
+                            .font(.system(size: 12, weight: .semibold))
+                        Image(systemName: "return")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
                 }
                 .foregroundColor(Color.black)
                 .padding(.horizontal, 12)
@@ -661,7 +675,7 @@ struct SmartSearchView: View {
             rows.append(SmartSuggestionRow(id: "search", icon: "magnifyingglass", label: trimmed, suffix: "Google", action: .search))
         } else {
             rows.append(SmartSuggestionRow(id: "search", icon: "magnifyingglass", label: trimmed, suffix: "Google", action: .search))
-            rows.append(SmartSuggestionRow(id: "chat", icon: "bubble.left.fill", label: trimmed, suffix: "Chat", action: .chat))
+            rows.append(SmartSuggestionRow(id: "chat", icon: "bubble.left.fill", label: trimmed, suffix: "Chat  \u{2318}\u{21A9}", action: .chat))
         }
 
         for (i, s) in searchSuggestions.prefix(6).enumerated() {
@@ -864,14 +878,39 @@ struct SmartSearchView: View {
 
         // If context is attached, always go to AI chat
         let hasContext = !attachedDocuments.isEmpty || !includedOtherTabIds.isEmpty
-        let intent = hasContext ? .ai : QueryClassifier.classify(trimmed)
+        if hasContext {
+            transitionToChat()
+            return
+        }
 
-        switch intent {
+        // Google first: heuristics settle clear cases instantly; ambiguous
+        // ones are routed by the model (search on timeout or failure).
+        switch QueryClassifier.verdict(trimmed) {
         case .search:
             performSearch(trimmed)
         case .ai:
             transitionToChat()
+        case .unsure:
+            guard !isRouting else { return }
+            isRouting = true
+            Task { @MainActor in
+                let intent = await QueryClassifier.resolve(trimmed)
+                isRouting = false
+                // Ignore the answer if the user changed or cleared the input meanwhile.
+                guard viewState == .idle,
+                      inputText.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+                currentIntent = intent
+                if intent == .ai { transitionToChat() } else { performSearch(trimmed) }
+            }
         }
+    }
+
+    /// ⌘↩: open chat regardless of routing.
+    private func forceChat() {
+        guard viewState == .idle, !isRouting,
+              !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        clearSuggestions()
+        transitionToChat()
     }
 
     private func stopGenerating() {

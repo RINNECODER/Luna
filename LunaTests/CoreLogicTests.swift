@@ -96,6 +96,28 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(QueryClassifier.classify("github"), .search)
         XCTAssertEqual(QueryClassifier.classify("help me outline a paper"), .ai)
     }
+
+    func testQueryClassifierIsGoogleFirst() {
+        // Lookups from the routing reference sheet go to search.
+        for q in ["apple news", "average conversion rate vs profit calculator",
+                  "security awareness tips newsletter", "convert python 2 print to python 3",
+                  "remote vs hybrid productivity statistics", "convert text to csv online",
+                  "how do microservices work", "what is the capital of france"] {
+            XCTAssertEqual(QueryClassifier.verdict(q), .search, q)
+        }
+        // Their prompt counterparts go to AI without needing the model.
+        for q in [
+            "Summarize the latest major news regarding Apple Inc.'s stock performance this morning, but also briefly check if there are any updates regarding the biological apple crop shortages in Washington state.",
+            "If our current website traffic is 50,000 visitors/month with a 1.2% conversion rate and a $45 average order value, calculate our current monthly revenue. Walk me through the math step-by-step.",
+            "Write a 3-paragraph email to corporate employees warning them about phishing attacks. Use exactly two bullet points and keep it under 150 words.",
+            "Review this legacy Python 2 script that uses deprecated print statements and refactor it into modern Python 3.11 using the requests library.",
+            "Synthesize the findings of peer-reviewed studies published between 2024 and 2026 regarding corporate productivity in fully remote vs. hybrid models.",
+            "Take the following raw log transcript, extract all timestamps, IP addresses, and error codes, and format them into a valid JSON object.",
+            "Explain the concept of microservices architecture versus monolithic architecture, but use a detailed analogy based on a busy restaurant kitchen.",
+        ] {
+            XCTAssertEqual(QueryClassifier.verdict(q), .ai, q)
+        }
+    }
 }
 
 @MainActor
