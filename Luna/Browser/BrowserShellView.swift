@@ -40,6 +40,12 @@ struct BrowserShellView: View {
     @State private var shouldResetPanelWidth: Bool = false
     @State private var isDraggingDivider: Bool = false
     @State private var eventMonitor: Any?
+    @State private var scrollMonitor: Any?
+    /// Horizontal trackpad travel over the chrome in the current gesture (profile swipe).
+    @State private var swipeTravel: CGFloat = 0
+    @State private var swipeConsumed = false
+    /// Brief name badge after switching profiles.
+    @State private var profileToast: BrowserProfile?
     @State private var pendingAction: BrowserAction? = nil
     @State private var pendingAssistantText: String = ""
     @State private var showActionConfirm: Bool = false
@@ -85,6 +91,11 @@ struct BrowserShellView: View {
         ZStack {
             VisualEffectView(material: usesSidebar ? .sidebar : .titlebar, blendingMode: .behindWindow, state: .followsWindowActiveState)
                 .ignoresSafeArea()
+            // The window chrome carries a hue of the active profile's color.
+            activeProfile.profileColor.color
+                .opacity(0.14)
+                .ignoresSafeArea()
+                .animation(.easeInOut(duration: 0.3), value: activeProfile.colorId)
 
             TitlebarConfigurator(tabStripHeight: 0, isFullScreen: $isFullScreen, hostWindow: $hostWindow)
 
@@ -165,6 +176,22 @@ struct BrowserShellView: View {
             if topBarAutoHides { topBarPeekOverlay }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.9), value: sidebarVisible)
+        .overlay(alignment: .top) {
+            if let profile = profileToast {
+                HStack(spacing: 8) {
+                    Image(nsImage: ProfileAvatar.image(for: profile, size: 20))
+                    Text(profile.name).font(.system(size: 13, weight: .semibold))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(.regularMaterial))
+                .overlay(Capsule().strokeBorder(profile.profileColor.color.opacity(0.5), lineWidth: 1))
+                .shadow(color: .black.opacity(0.2), radius: 10, y: 4)
+                .padding(.top, 14)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .allowsHitTesting(false)
+            }
+        }
         .focusedSceneValue(\.profileCommands, ProfileCommandContext(
             activeProfileId: sessionStore.activeProfileId,
             switchTo: switchToProfile,
@@ -200,6 +227,11 @@ struct BrowserShellView: View {
                 if let id = tabManager.currentTab {
                     web.setActiveTab(id)
                     addressBarText = ""
+                }
+            }
+            if scrollMonitor == nil {
+                scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+                    handleProfileSwipe(event) ? nil : event
                 }
             }
             guard eventMonitor == nil else { return }
@@ -406,6 +438,10 @@ struct BrowserShellView: View {
                 NSEvent.removeMonitor(m)
                 eventMonitor = nil
             }
+            if let m = scrollMonitor {
+                NSEvent.removeMonitor(m)
+                scrollMonitor = nil
+            }
         }
     }
 
@@ -494,7 +530,10 @@ struct BrowserShellView: View {
     private var topBarPeekOverlay: some View {
         if topBarPeeking {
             topChrome(showsTabs: false)
-                .background(VisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active))
+                .background(ZStack {
+                    VisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active)
+                    activeProfile.profileColor.color.opacity(0.14)
+                })
                 .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
                 .onHover { inside in
                     if !inside && !addressBarFocused { topBarPeeking = false }
@@ -556,7 +595,10 @@ struct BrowserShellView: View {
             sidebar
                 .frame(width: sidebarWidth)
                 .frame(maxHeight: .infinity)
-                .background(VisualEffectView(material: .sidebar, blendingMode: .withinWindow, state: .active))
+                .background(ZStack {
+                    VisualEffectView(material: .sidebar, blendingMode: .withinWindow, state: .active)
+                    activeProfile.profileColor.color.opacity(0.14)
+                })
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .shadow(color: .black.opacity(0.25), radius: 12, x: 2)
                 .padding(.vertical, 6)
@@ -739,6 +781,47 @@ struct BrowserShellView: View {
     }
 
     // MARK: - Profile switching
+
+    /// Two-finger horizontal swipe over the sidebar or top bar moves to the
+    /// next/previous profile. Returns true when the event was used.
+    private func handleProfileSwipe(_ event: NSEvent) -> Bool {
+        guard let window = hostWindow, event.window === window, event.hasPreciseScrollingDeltas,
+              profileManager.profiles.count > 1 else { return false }
+        if event.phase == .began {
+            swipeTravel = 0
+            swipeConsumed = false
+        }
+        guard event.phase == .began || event.phase == .changed else {
+            if event.phase == .ended || event.phase == .cancelled { swipeTravel = 0 }
+            return false
+        }
+        // Only over the chrome: the sidebar, or the top bar rows.
+        let point = event.locationInWindow
+        let fromTop = (window.contentView?.bounds.height ?? 0) - point.y
+        let overChrome = (sidebarShown && point.x <= sidebarWidth)
+            || (showsTopChrome && fromTop <= TopChromeView.height(for: layout, showsTabs: !frameless))
+        guard overChrome, abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.5 || swipeTravel != 0 else { return false }
+        guard !swipeConsumed else { return true }
+        swipeTravel += event.scrollingDeltaX
+        if abs(swipeTravel) > 90 {
+            swipeConsumed = true
+            let offset = swipeTravel < 0 ? 1 : -1
+            if let next = profileManager.neighbor(of: sessionStore.activeProfileId, offset: offset) {
+                switchToProfile(next)
+                showProfileToast(next)
+            }
+        }
+        return true
+    }
+
+    private func showProfileToast(_ profile: BrowserProfile) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { profileToast = profile }
+        let id = profile.id
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            guard profileToast?.id == id else { return }
+            withAnimation(.easeOut(duration: 0.25)) { profileToast = nil }
+        }
+    }
 
     private func switchToProfile(_ profile: BrowserProfile) {
         guard profile.id != sessionStore.activeProfileId else { return }

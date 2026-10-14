@@ -10,6 +10,13 @@ enum ProfileAvatar {
         let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             profile.profileColor.nsColor.setFill()
             NSBezierPath(ovalIn: rect).fill()
+            if let symbol = profile.iconName,
+               let glyph = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(.init(pointSize: size * 0.48, weight: .semibold).applying(.init(paletteColors: [.white]))) {
+                let g = glyph.size
+                glyph.draw(in: NSRect(x: rect.midX - g.width / 2, y: rect.midY - g.height / 2, width: g.width, height: g.height))
+                return true
+            }
             let initial = String(profile.name.prefix(1)).uppercased() as NSString
             let attrs: [NSAttributedString.Key: Any] = [
                 .font: NSFont.systemFont(ofSize: size * 0.5, weight: .semibold),
@@ -32,6 +39,19 @@ enum ProfileAvatar {
         image.isTemplate = false
         return image
     }
+}
+
+// MARK: - Icons
+
+enum ProfileIcons {
+    /// SF Symbols offered for profile avatars.
+    static let choices: [String] = [
+        "person.fill", "briefcase.fill", "house.fill", "graduationcap.fill", "book.fill", "laptopcomputer",
+        "hammer.fill", "paintbrush.fill", "camera.fill", "music.note", "gamecontroller.fill", "film.fill",
+        "cart.fill", "creditcard.fill", "airplane", "car.fill", "leaf.fill", "pawprint.fill",
+        "heart.fill", "star.fill", "bolt.fill", "flame.fill", "moon.fill", "sun.max.fill",
+        "globe.americas.fill", "sparkles", "lock.fill", "chart.bar.fill", "stethoscope", "dumbbell.fill",
+    ]
 }
 
 // MARK: - Settings routing

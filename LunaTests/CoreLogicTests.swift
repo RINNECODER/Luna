@@ -97,3 +97,22 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(QueryClassifier.classify("help me outline a paper"), .ai)
     }
 }
+
+@MainActor
+final class ProfileTests: XCTestCase {
+    func testSwipeNeighborWrapsAround() {
+        let manager = ProfileManager.shared
+        let ids = manager.profiles.map(\.id)
+        guard ids.count > 1 else { return }
+        XCTAssertEqual(manager.neighbor(of: ids[0], offset: 1)?.id, ids[1])
+        XCTAssertEqual(manager.neighbor(of: ids[0], offset: -1)?.id, ids.last)
+        XCTAssertEqual(manager.neighbor(of: ids.last!, offset: 1)?.id, ids[0])
+    }
+
+    func testOldProfilesDecodeWithoutIcon() throws {
+        let json = #"{"id":"6F9619FF-8B86-D011-B42D-00C04FC964FF","name":"Work","colorId":"indigo","isDefault":false}"#
+        let profile = try JSONDecoder().decode(BrowserProfile.self, from: Data(json.utf8))
+        XCTAssertNil(profile.iconName)
+        XCTAssertEqual(profile.profileColor.id, "indigo")
+    }
+}

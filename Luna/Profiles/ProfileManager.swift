@@ -23,16 +23,30 @@ struct ProfileColor: Identifiable, Codable, Equatable {
         Color(red: min(1, r + 0.12), green: min(1, g + 0.12), blue: min(1, b + 0.12))
     }
 
+    /// Existing ids keep their values so saved profiles don't change color.
     static let presets: [ProfileColor] = [
         ProfileColor(id: "indigo",   r: 0.29, g: 0.33, b: 0.80),
-        ProfileColor(id: "violet",   r: 0.55, g: 0.27, b: 0.85),
-        ProfileColor(id: "rose",     r: 0.85, g: 0.25, b: 0.42),
-        ProfileColor(id: "amber",    r: 0.85, g: 0.55, b: 0.10),
-        ProfileColor(id: "emerald",  r: 0.13, g: 0.65, b: 0.45),
+        ProfileColor(id: "blue",     r: 0.04, g: 0.48, b: 0.96),
         ProfileColor(id: "sky",      r: 0.18, g: 0.60, b: 0.86),
-        ProfileColor(id: "slate",    r: 0.30, g: 0.35, b: 0.42),
-        ProfileColor(id: "coral",    r: 0.90, g: 0.40, b: 0.30),
+        ProfileColor(id: "cyan",     r: 0.20, g: 0.72, b: 0.82),
         ProfileColor(id: "teal",     r: 0.10, g: 0.60, b: 0.60),
+        ProfileColor(id: "mint",     r: 0.22, g: 0.76, b: 0.62),
+        ProfileColor(id: "emerald",  r: 0.13, g: 0.65, b: 0.45),
+        ProfileColor(id: "green",    r: 0.20, g: 0.70, b: 0.30),
+        ProfileColor(id: "lime",     r: 0.55, g: 0.76, b: 0.18),
+        ProfileColor(id: "yellow",   r: 0.95, g: 0.77, b: 0.12),
+        ProfileColor(id: "amber",    r: 0.85, g: 0.55, b: 0.10),
+        ProfileColor(id: "orange",   r: 0.96, g: 0.50, b: 0.12),
+        ProfileColor(id: "coral",    r: 0.90, g: 0.40, b: 0.30),
+        ProfileColor(id: "red",      r: 0.90, g: 0.24, b: 0.22),
+        ProfileColor(id: "rose",     r: 0.85, g: 0.25, b: 0.42),
+        ProfileColor(id: "pink",     r: 0.95, g: 0.38, b: 0.62),
+        ProfileColor(id: "magenta",  r: 0.82, g: 0.26, b: 0.74),
+        ProfileColor(id: "violet",   r: 0.55, g: 0.27, b: 0.85),
+        ProfileColor(id: "purple",   r: 0.64, g: 0.38, b: 0.92),
+        ProfileColor(id: "brown",    r: 0.58, g: 0.42, b: 0.28),
+        ProfileColor(id: "sand",     r: 0.74, g: 0.64, b: 0.48),
+        ProfileColor(id: "slate",    r: 0.30, g: 0.35, b: 0.42),
         ProfileColor(id: "graphite", r: 0.22, g: 0.22, b: 0.24),
     ]
 
@@ -47,6 +61,8 @@ struct BrowserProfile: Identifiable, Codable, Equatable {
     let id: UUID
     var name: String
     var colorId: String   // references ProfileColor.id
+    /// SF Symbol shown in the avatar instead of the initial (nil = initial).
+    var iconName: String?
     /// true = uses WKWebsiteDataStore.default() (legacy / Default profile)
     var isDefault: Bool
 
@@ -162,6 +178,18 @@ final class ProfileManager: ObservableObject {
         guard let idx = profiles.firstIndex(where: { $0.id == profileId }) else { return }
         profiles[idx].name = name
         saveProfiles()
+    }
+
+    func setIcon(profileId: UUID, iconName: String?) {
+        guard let idx = profiles.firstIndex(where: { $0.id == profileId }) else { return }
+        profiles[idx].iconName = iconName
+        saveProfiles()
+    }
+
+    /// The profile `offset` steps away in the list, wrapping around (swipe switching).
+    func neighbor(of profileId: UUID, offset: Int) -> BrowserProfile? {
+        guard profiles.count > 1, let i = profiles.firstIndex(where: { $0.id == profileId }) else { return nil }
+        return profiles[(i + offset % profiles.count + profiles.count) % profiles.count]
     }
 
     func recolor(profileId: UUID, colorId: String) {
