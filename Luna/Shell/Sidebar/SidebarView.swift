@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Arc-style sidebar: window controls and navigation, favorites, the
 /// pinned/today outline, and the space bar. The URL field lives in the
@@ -21,9 +22,7 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             topRow
-            if !store.workspace.favorites.isEmpty {
-                FavoritesGrid(store: store, web: web, actions: actions)
-            }
+            FavoritesGrid(store: store, web: web, actions: actions)
             SidebarOutline(snapshot: .make(store: store, web: web), actions: actions)
                 // Source-list rows carry their own inset; line them up with the URL field.
                 .padding(.horizontal, -8)
@@ -102,36 +101,103 @@ struct SidebarView: View {
 
 // MARK: - Favorites
 
+/// Favorites as icon tiles. Drag to reorder, drag a tab in from the list to
+/// add it, or drag a favorite out onto the list to make it a regular tab.
 private struct FavoritesGrid: View {
     @ObservedObject var store: WorkspaceStore
     @ObservedObject var web: WebViewWrapper
     let actions: SidebarActions
 
+    /// Favorite being dragged from this grid (nil for drags from the list).
+    @State private var dragging: UUID?
+    @State private var emptyTargeted = false
+
     private let columns = [GridItem(.adaptive(minimum: 48), spacing: 6)]
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 6) {
-            ForEach(store.workspace.favorites, id: \.self) { id in
-                if let tab = store.tab(id) {
-                    let isActive = store.activeTabId == id
-                    Button { actions.activate(id) } label: {
-                        TabIcon(tab: tab, faviconURL: web.faviconURLByTab[id] ?? nil, size: 18)
-                            .frame(maxWidth: .infinity, minHeight: 40)
-                            .background(
-                                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                    .fill(isActive ? AnyShapeStyle(.selection.opacity(0.35)) : AnyShapeStyle(.quaternary.opacity(0.6)))
-                            )
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(displayTitle(for: tab))
-                    .contextMenu {
-                        Button("Remove from Favorites") { store.unpin(id) }
-                        Button("Reset Tab") { actions.close(id) }
+        let favorites = store.workspace.favorites
+        if favorites.isEmpty {
+            // Thin landing strip: grows into a hint while a tab hovers it.
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                .foregroundStyle(.tertiary)
+                .overlay(Text("Add to Favorites").font(.system(size: 11)).foregroundStyle(.secondary))
+                .frame(height: emptyTargeted ? 40 : 10)
+                .opacity(emptyTargeted ? 1 : 0)
+                .contentShape(Rectangle())
+                .onDrop(of: [.lunaNode], isTargeted: $emptyTargeted) { providers in
+                    FavoriteDrop.load(providers) { store.moveToFavorites($0, at: 0) }
+                }
+                .animation(.easeOut(duration: 0.15), value: emptyTargeted)
+        } else {
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(favorites, id: \.self) { id in
+                    if let tab = store.tab(id) {
+                        tile(id: id, tab: tab)
+                            .onDrag {
+                                dragging = id
+                                return HorizontalTabStrip.itemProvider(for: id)
+                            }
+                            .onDrop(of: [.lunaNode], delegate: FavoriteDrop(target: id, store: store, dragging: $dragging))
                     }
                 }
             }
+            .animation(.spring(response: 0.25, dampingFraction: 0.86), value: favorites)
         }
+    }
+
+    private func tile(id: UUID, tab: Tab) -> some View {
+        let isActive = store.activeTabId == id
+        return Button { actions.activate(id) } label: {
+            TabIcon(tab: tab, faviconURL: web.faviconURLByTab[id] ?? nil, size: 18)
+                .frame(maxWidth: .infinity, minHeight: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(isActive ? AnyShapeStyle(.selection.opacity(0.35)) : AnyShapeStyle(.quaternary.opacity(0.6)))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(displayTitle(for: tab))
+        .contextMenu {
+            Button("Remove from Favorites") { store.unpin(id) }
+            Button("Reset Tab") { actions.close(id) }
+        }
+    }
+}
+
+/// Reorders favorites live while one is dragged across the grid; tabs dragged
+/// in from the list are added where they're dropped.
+private struct FavoriteDrop: DropDelegate {
+    let target: UUID
+    let store: WorkspaceStore
+    @Binding var dragging: UUID?
+
+    func dropEntered(info: DropInfo) {
+        guard let dragged = dragging, dragged != target,
+              let to = store.workspace.favorites.firstIndex(of: target) else { return }
+        store.moveToFavorites(dragged, at: to)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { dragging = nil }
+        guard dragging == nil else { return true }
+        return Self.load(info.itemProviders(for: [.lunaNode])) { id in
+            store.moveToFavorites(id, at: store.workspace.favorites.firstIndex(of: target))
+        }
+    }
+
+    /// Reads a dragged tab id (from the grid, the tab strip or the sidebar list).
+    @discardableResult
+    static func load(_ providers: [NSItemProvider], then action: @escaping (UUID) -> Void) -> Bool {
+        guard let provider = providers.first else { return false }
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.lunaNode.identifier) { data, _ in
+            guard let data, let id = UUID(uuidString: String(decoding: data, as: UTF8.self)) else { return }
+            DispatchQueue.main.async { action(id) }
+        }
+        return true
     }
 }
 

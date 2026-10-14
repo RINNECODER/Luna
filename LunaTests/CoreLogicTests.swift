@@ -97,6 +97,19 @@ final class CoreLogicTests: XCTestCase {
         XCTAssertEqual(QueryClassifier.classify("help me outline a paper"), .ai)
     }
 
+    func testUserAgentMatchesInstalledSafari() {
+        let version = WebViewWrapper.systemSafariVersion
+        XCTAssertTrue(version.first?.isNumber == true)
+        XCTAssertTrue(WebViewWrapper.safariUserAgent.contains("Version/\(version) Safari/605.1.15"))
+        XCTAssertFalse(WebViewWrapper.safariUserAgent.contains("Version/18.3"))
+    }
+
+    func testBuiltInExtensionsShipWithTheApp() throws {
+        let dir = try XCTUnwrap(Bundle.main.resourceURL?.appendingPathComponent("BuiltInExtensions/uBOLite"))
+        XCTAssertNotNil(ExtensionLibrary.manifestVersion(at: dir))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("LICENSE.txt").path))
+    }
+
     func testQueryClassifierIsGoogleFirst() {
         // Lookups from the routing reference sheet go to search.
         for q in ["apple news", "average conversion rate vs profit calculator",

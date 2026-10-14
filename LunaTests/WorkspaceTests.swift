@@ -229,6 +229,28 @@ final class WorkspaceTests: XCTestCase {
         assertValid(store)
     }
 
+    func testClosingASplitPaneKeepsItsPartnerOnScreen() {
+        let store = makeStore()
+        let a = store.newTab(url: url("a"))
+        let b = store.newTab(url: url("b"))
+        let c = store.newTab(url: url("c"))
+        _ = store.splitTab(c, onto: b)
+        store.activate(b)
+        store.close(b)
+        XCTAssertEqual(store.activeTabId, c)
+        XCTAssertEqual(store.visibleTabIds, [c])
+        XCTAssertEqual(store.orderedTabIds, [a, c])
+        // A pinned pane is reset, leaves the split, and its partner stays focused.
+        let d = store.newTab(url: url("d"))
+        store.pin(d)
+        _ = store.splitTab(c, onto: d)
+        store.activate(d)
+        store.close(d)
+        XCTAssertNil(store.workspace.splitGroup(containing: c))
+        XCTAssertEqual(store.activeTabId, c)
+        assertValid(store)
+    }
+
     func testSplitDropRejectsFavoritesAndFullSplits() {
         let store = makeStore()
         let ids = (0..<6).map { store.newTab(url: url("t\($0)")) }

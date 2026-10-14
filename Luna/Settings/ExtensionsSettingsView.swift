@@ -43,7 +43,8 @@ struct ExtensionsSettingsView: View {
                         ExtensionIcon(directory: library.directory(for: record))
                         VStack(alignment: .leading, spacing: 1) {
                             Text(record.name)
-                            Text("Version \(record.version)").font(.callout).foregroundStyle(.secondary)
+                            Text(record.builtInID != nil ? "Version \(record.version) · Built into Luna" : "Version \(record.version)")
+                                .font(.callout).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Toggle("Enabled", isOn: Binding(get: { record.enabled }, set: { library.setEnabled(record, $0) }))
@@ -54,8 +55,18 @@ struct ExtensionsSettingsView: View {
                             .help("Remove")
                     }
                 }
+                if !(UserDefaults.standard.stringArray(forKey: ExtensionLibrary.removedBuiltInsKey) ?? []).isEmpty {
+                    Button("Restore Built-in Extensions") {
+                        UserDefaults.standard.removeObject(forKey: ExtensionLibrary.removedBuiltInsKey)
+                        library.installBuiltIns()
+                    }
+                }
             } header: {
                 Text("Installed")
+            } footer: {
+                Text("uBlock Origin Lite by Raymond Hill blocks ads and trackers. It's bundled with Luna under the GPL-3.0 license (source: github.com/uBlockOrigin/uBOL-home).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

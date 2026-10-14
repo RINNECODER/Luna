@@ -67,6 +67,9 @@ final class ExtensionHost: NSObject, ObservableObject, WKWebExtensionControllerD
                     try controller.load(context)
                     contexts[record.id] = context
                     actionRevision += 1
+                    #if DEBUG
+                    if !context.errors.isEmpty { NSLog("ExtensionHost: %@ loaded with errors: %@", record.name, "\(context.errors)") }
+                    #endif
                 } catch {
                     print("ExtensionHost: failed to load \(record.name): \(error)")
                 }

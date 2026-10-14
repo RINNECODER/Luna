@@ -26,6 +26,11 @@ targets:
       - path: Luna
         excludes:
           - Resources/README_NOT_RESOURCES.md
+          - BuiltInExtensions/**
+      # Shipped as a folder (structure intact) so WebKit can load the extensions.
+      - path: Luna/BuiltInExtensions
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: Luna

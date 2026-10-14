@@ -17,7 +17,20 @@ final class ExtensionLibrary: ObservableObject {
         /// Chrome Web Store id when installed from a store link.
         var storeID: String?
         var installedAt: Date
+        /// Set for extensions that ship inside Luna (e.g. "ubolite").
+        var builtInID: String?
     }
+
+    /// Extensions bundled in Luna.app (Resources/BuiltInExtensions).
+    struct BuiltIn {
+        let id: String
+        let folder: String
+        let name: String
+    }
+
+    static let builtIns = [BuiltIn(id: "ubolite", folder: "uBOLite", name: "uBlock Origin Lite")]
+    /// Built-ins the user removed; they aren't reinstalled.
+    static let removedBuiltInsKey = "luna_removed_builtin_extensions"
 
     enum InstallError: LocalizedError {
         case noManifest
@@ -54,6 +67,50 @@ final class ExtensionLibrary: ObservableObject {
            let saved = try? JSONDecoder().decode([Record].self, from: data) {
             records = saved.filter { FileManager.default.fileExists(atPath: directory(for: $0).path) }
         }
+        installBuiltIns()
+    }
+
+    // MARK: - Built-ins
+
+    /// Installs bundled extensions the first time, and refreshes them in place
+    /// (same record, so their settings survive) when Luna ships a new version.
+    /// Ones the user removed stay removed.
+    func installBuiltIns(bundle: Bundle = .main) {
+        let removed = Set(UserDefaults.standard.stringArray(forKey: Self.removedBuiltInsKey) ?? [])
+        var changed = false
+        for builtIn in Self.builtIns where !removed.contains(builtIn.id) {
+            guard let source = bundle.resourceURL?
+                    .appendingPathComponent("BuiltInExtensions/\(builtIn.folder)", isDirectory: true),
+                  let version = Self.manifestVersion(at: source) else { continue }
+            let existing = records.firstIndex { $0.builtInID == builtIn.id }
+            if let i = existing, records[i].version == version { continue }
+            let record = existing.map { records[$0] }
+                ?? Record(id: UUID(), name: builtIn.name, version: version, enabled: true,
+                          storeID: nil, installedAt: Date(), builtInID: builtIn.id)
+            let dest = directory(for: record)
+            do {
+                try? FileManager.default.removeItem(at: dest)
+                try FileManager.default.copyItem(at: source, to: dest)
+            } catch {
+                print("ExtensionLibrary: couldn't install \(builtIn.name): \(error)")
+                continue
+            }
+            if let i = existing {
+                records[i].version = version
+                // Reload with the new files on next sync.
+                records[i].installedAt = Date()
+            } else {
+                records.insert(record, at: 0)
+            }
+            changed = true
+        }
+        if changed { save() }
+    }
+
+    static func manifestVersion(at dir: URL) -> String? {
+        guard let data = try? Data(contentsOf: dir.appendingPathComponent("manifest.json")),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return json["version"] as? String
     }
 
     func directory(for record: Record) -> URL {
@@ -115,7 +172,7 @@ final class ExtensionLibrary: ObservableObject {
         }
         guard confirmInstall(ext) else { throw InstallError.cancelled }
         let record = Record(id: UUID(), name: ext.displayName ?? "Extension", version: ext.displayVersion ?? ext.version ?? "",
-                            enabled: true, storeID: storeID, installedAt: Date())
+                            enabled: true, storeID: storeID, installedAt: Date(), builtInID: nil)
         try FileManager.default.moveItem(at: root, to: directory(for: record))
         records.append(record)
         save()
@@ -131,6 +188,11 @@ final class ExtensionLibrary: ObservableObject {
     }
 
     func remove(_ record: Record) {
+        if let builtIn = record.builtInID {
+            var removed = UserDefaults.standard.stringArray(forKey: Self.removedBuiltInsKey) ?? []
+            if !removed.contains(builtIn) { removed.append(builtIn) }
+            UserDefaults.standard.set(removed, forKey: Self.removedBuiltInsKey)
+        }
         records.removeAll { $0.id == record.id }
         try? FileManager.default.removeItem(at: directory(for: record))
         save()

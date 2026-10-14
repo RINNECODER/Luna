@@ -52,7 +52,9 @@ final class ExtensionTests: XCTestCase {
         XCTAssertEqual(record.name, "Luna Test Marker")
 
         let session = ProfileSession(profileId: UUID(), dataStore: .nonPersistent(), workspace: WorkspaceStore(persistence: nil))
-        try await waitUntil("extension loaded") { !session.extensions.loaded.isEmpty }
+        // Built-in extensions (uBlock Origin Lite) load too; watch just this one.
+        let isLoaded = { session.extensions.loaded.contains { $0.record.id == record.id } }
+        try await waitUntil("extension loaded") { isLoaded() }
 
         let tab = session.tabManager.newTab(url: URL(string: "https://ext.example.test/")!)
         let wv = session.webViewWrapper.ensureWebView(for: tab)
@@ -67,6 +69,6 @@ final class ExtensionTests: XCTestCase {
 
         // Turning it off unloads it.
         ExtensionLibrary.shared.setEnabled(record, false)
-        try await waitUntil("extension unloaded") { session.extensions.loaded.isEmpty }
+        try await waitUntil("extension unloaded") { !isLoaded() }
     }
 }

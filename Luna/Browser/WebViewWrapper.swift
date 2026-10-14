@@ -457,11 +457,27 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     private static let chromeLikeUserAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-    /// Real Safari UA for Google sign-in. The default WKWebView UA omits the
-    /// "Version/… Safari/…" token, causing Google to reject it as an embedded
-    /// browser. This string matches a real Safari 18.3 on macOS Sequoia.
-    private static let safariUserAgent =
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15"
+    /// The UA of the Safari installed on this Mac. The default WKWebView UA
+    /// omits the "Version/… Safari/…" token, so Google rejects it as an
+    /// embedded browser; a hard-coded old Safari version instead makes Luna
+    /// rare (identifiable) and look outdated. Matching the system Safari makes
+    /// Luna indistinguishable from it. The OS and WebKit tokens are frozen in
+    /// Safari itself, so only the version changes.
+    static let safariUserAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(systemSafariVersion) Safari/605.1.15"
+
+    /// "27.0.1" from the installed Safari, or the macOS major version (Safari
+    /// ships in lockstep with macOS) when Safari can't be read.
+    static var systemSafariVersion: String {
+        for path in ["/Applications/Safari.app", "/System/Volumes/Preboot/Cryptexes/App/System/Applications/Safari.app"] {
+            if let v = Bundle(path: path)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+               v.first?.isNumber == true {
+                return v
+            }
+        }
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        return "\(os.majorVersion).\(os.minorVersion)"
+    }
 
     /// Hosts where the bare default WKWebView UA should be used (no spoofing).
     private static func shouldUseDefaultUserAgent(for url: URL?) -> Bool {

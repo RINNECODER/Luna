@@ -212,6 +212,11 @@ struct BrowserShellView: View {
                     newTabWithURL(url)
                     if let first, let second = tabManager.currentTab { session.workspace.splitTab(second, onto: first) }
                 }
+                if ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_SPLIT_CLOSE"] != nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        if let id = tabManager.currentTab { closeTab(id) }
+                    }
+                }
             }
             if ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_AI_PANEL"] != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { toggleAIPanel() }
@@ -1732,9 +1737,9 @@ private struct PanelResizeHandle: View {
 // MARK: - NSViewRepresentables
 
 /// Hosts a tab's long-lived WKWebView. The web view sits inside a plain
-/// container instead of being the representable's own view, so when a tab
-/// moves (into or out of a split) SwiftUI tearing down the old container
-/// can't pull the page out of the new one.
+/// container instead of being the representable's own view, so it can move
+/// between containers when a tab enters or leaves a split. A new container
+/// takes the web view; an old one being torn down never takes it back.
 struct WebViewContainer: NSViewRepresentable {
     let webView: WKWebView
 
@@ -1745,7 +1750,9 @@ struct WebViewContainer: NSViewRepresentable {
     }
 
     func updateNSView(_ host: NSView, context: Context) {
-        attach(to: host)
+        // Re-adopt only an orphaned web view: a container on its way out still
+        // gets updates and must not steal the page back from its replacement.
+        if webView.superview == nil { attach(to: host) }
     }
 
     static func dismantleNSView(_ host: NSView, coordinator: ()) {

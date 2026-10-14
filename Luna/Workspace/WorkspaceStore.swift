@@ -129,7 +129,14 @@ final class WorkspaceStore: ObservableObject {
             let wasActive = ws.activeTabId == tabId
             let spaceId = ws.spaceId(containing: tabId) ?? ws.activeSpaceId
             let order = ws.orderedTabIds(inSpace: spaceId)
+            // Closing a split pane leaves its partner on screen (Helium does the same).
+            let partner: UUID? = ws.splitGroup(containing: tabId).flatMap { g in
+                guard let i = g.panes.firstIndex(of: tabId) else { return nil }
+                return i > 0 ? g.panes[i - 1] : g.panes.dropFirst().first
+            }
             if persistent {
+                // A pinned pane leaves the split when it's reset.
+                if partner != nil { ws.detachTabFromAnySplit(tabId) }
                 if let saved = ws.tabs[tabId]?.savedURL { ws.tabs[tabId]?.url = saved }
                 ws.tabs[tabId]?.interactionState = nil
             } else {
@@ -142,7 +149,7 @@ final class WorkspaceStore: ObservableObject {
             }
             if wasActive, let i = order.firstIndex(of: tabId) {
                 let remaining = order.filter { $0 != tabId }
-                let next = remaining.isEmpty ? nil : remaining[max(0, min(i - 1, remaining.count - 1))]
+                let next = partner ?? (remaining.isEmpty ? nil : remaining[max(0, min(i - 1, remaining.count - 1))])
                 if let si = ws.spaceIndex(spaceId) { ws.spaces[si].activeTabId = next }
                 if let next { ws.tabs[next]?.lastActiveAt = Date() }
             }
