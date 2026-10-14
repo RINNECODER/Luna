@@ -48,7 +48,7 @@ targets:
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Luna needs microphone access for websites that request it."
         INFOPLIST_KEY_NSDownloadsFolderUsageDescription: "Luna needs access to Downloads to save files."
         ENABLE_APP_SANDBOX: YES
-        ENABLE_INCOMING_NETWORK_CONNECTIONS: NO # TODO: Enable this when we have a way to handle incoming network connections
+        ENABLE_INCOMING_NETWORK_CONNECTIONS: YES # Loopback listener for "Sign in with ChatGPT" (127.0.0.1 only)
         ENABLE_OUTGOING_NETWORK_CONNECTIONS: YES # TODO: Enable this when we have a way to handle outgoing network connections
         ENABLE_PREVIEWS: YES
         ENABLE_RESOURCE_ACCESS_AUDIO_INPUT: YES # TODO: Enable this when we have a way to handle audio input

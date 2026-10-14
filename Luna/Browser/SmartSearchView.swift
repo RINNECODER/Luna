@@ -1111,26 +1111,11 @@ struct SmartSearchView: View {
             }
 
             await MainActor.run {
-                switch aiProvider {
-                case .gemini:
-                    streamingTask = gemini.generateStreaming(
-                        prompt: prompt,
-                        context: finalContext,
-                        recentMessages: recentContext,
-                        onToken: onToken,
-                        onCompletion: onCompletion
-                    )
-                case .ollama:
-                    streamingTask = ollama.generateStreaming(
-                        baseURLString: ollamaBaseURL,
-                        model: ollamaModel,
-                        prompt: prompt,
-                        context: finalContext,
-                        recentMessages: recentContext,
-                        onToken: onToken,
-                        onCompletion: onCompletion
-                    )
-                }
+                streamingTask = LLMService.shared.stream(
+                    LLMRequest(prompt: prompt, context: finalContext, recentMessages: recentContext),
+                    onToken: onToken,
+                    onCompletion: onCompletion
+                )
             }
         }
         currentAITask = task
@@ -1253,24 +1238,15 @@ struct SmartSearchView: View {
 
         let titlePrompt = "Generate a 2-5 word tab title for this conversation. First message: \"\(query)\". Reply with ONLY the title, no quotes, no punctuation."
 
-        let handler: (Result<Data, Error>) -> Void = { result in
+        LLMService.shared.complete(LLMRequest(prompt: titlePrompt)) { result in
             DispatchQueue.main.async {
-                if case .success(let data) = result,
-                   let response = try? JSONDecoder().decode(LLMResponse.self, from: data) {
-                    let title = response.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if case .success(let raw) = result {
+                    let title = raw.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "\"'")))
                     if !title.isEmpty && title.count < 40 {
                         tabManager.updateTitle(tab: id, title: title)
                     }
                 }
             }
-        }
-
-        switch aiProvider {
-        case .gemini:
-            gemini.generate(prompt: titlePrompt, context: nil, completion: handler)
-        case .ollama:
-            ollama.generate(baseURLString: ollamaBaseURL, model: ollamaModel,
-                            prompt: titlePrompt, context: nil, completion: handler)
         }
     }
 

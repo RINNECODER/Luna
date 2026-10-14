@@ -787,28 +787,11 @@ struct CommandSurfaceView: View {
             }
         }
 
-        switch aiProvider {
-        case .gemini:
-            streamingTask = gemini.generateStreaming(
-                prompt: prompt,
-                context: context,
-                recentMessages: recentContext,
-                conversationSummary: conversationSummary,
-                onToken: onToken,
-                onCompletion: onCompletion
-            )
-        case .ollama:
-            streamingTask = ollama.generateStreaming(
-                baseURLString: ollamaBaseURL,
-                model: ollamaModel,
-                prompt: prompt,
-                context: context,
-                recentMessages: recentContext,
-                conversationSummary: conversationSummary,
-                onToken: onToken,
-                onCompletion: onCompletion
-            )
-        }
+        streamingTask = LLMService.shared.stream(
+            LLMRequest(prompt: prompt, context: context, recentMessages: recentContext, conversationSummary: conversationSummary),
+            onToken: onToken,
+            onCompletion: onCompletion
+        )
     }
     
     private func checkAndSummarize() {
@@ -849,17 +832,7 @@ struct CommandSurfaceView: View {
                     }
                 }
             }
-            switch aiProvider {
-            case .gemini:
-                gemini.summarizeConversation(messages: messagesToProcess, completion: completion)
-            case .ollama:
-                ollama.summarizeConversation(
-                    baseURLString: ollamaBaseURL,
-                    model: ollamaModel,
-                    messages: messagesToProcess,
-                    completion: completion
-                )
-            }
+            LLMService.shared.summarize(messagesToProcess, completion: completion)
         }
     }
 
