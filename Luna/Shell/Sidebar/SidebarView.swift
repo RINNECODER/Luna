@@ -1,17 +1,13 @@
 import SwiftUI
 
-/// Arc-style sidebar: window controls and navigation, the URL field,
-/// favorites, the pinned/today outline, and the space bar.
+/// Arc-style sidebar: window controls and navigation, favorites, the
+/// pinned/today outline, and the space bar. The URL field lives in the
+/// top bar that slides in on hover or ⌘L.
 struct SidebarView: View {
     @ObservedObject var store: WorkspaceStore
     @ObservedObject var web: WebViewWrapper
-    @Binding var addressText: String
-    var addressFocused: FocusState<Bool>.Binding
     let isFullScreen: Bool
-    /// False while slid off-screen.
-    var isOnScreen: Bool = true
     let actions: SidebarActions
-    let onSubmitAddress: () -> Void
     let onToggleSidebar: () -> Void
     let onShowDownloads: () -> Void
     let extensions: ExtensionHost
@@ -25,7 +21,6 @@ struct SidebarView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             topRow
-            urlField
             if !store.workspace.favorites.isEmpty {
                 FavoritesGrid(store: store, web: web, actions: actions)
             }
@@ -58,19 +53,6 @@ struct SidebarView: View {
         }
         .frame(height: Self.topRowHeight)
         .background(WindowDragRegionView())
-    }
-
-    // MARK: URL field
-
-    private var urlField: some View {
-        AddressField(
-            url: activeTab?.url,
-            text: $addressText,
-            focused: addressFocused,
-            loadingProgress: store.activeTabId.flatMap { web.loadingProgressByTab[$0] },
-            reportsAnchor: isOnScreen,
-            onSubmit: onSubmitAddress
-        )
     }
 
     // MARK: Bottom bar

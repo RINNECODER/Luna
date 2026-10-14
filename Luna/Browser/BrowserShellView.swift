@@ -88,6 +88,8 @@ struct BrowserShellView: View {
     @State private var topBarPeeking = false
     /// Window buttons shown because the pointer is at the top edge (sidebar hidden).
     @State private var windowButtonsPeeking = false
+    /// Pointer is over the revealed top bar.
+    @State private var topBarHovering = false
 
     var body: some View {
         ZStack {
@@ -107,11 +109,14 @@ struct BrowserShellView: View {
                     VStack(spacing: 0) {
                         if showsTopChrome {
                             topChrome(showsTabs: !frameless)
+                        } else if addressBarPeeks {
+                            peekingTopBar
                         }
                         framedContent
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.leading, sidebarShown ? sidebarWidth : 0)
+                    .animation(Self.chromeAnimation, value: topBarPeeking)
                     .animation(.easeInOut(duration: 0.08), value: tabManager.currentTab)
 
                     // ─── AI side panel (hidden on start page and AI chat) ────────
@@ -180,8 +185,16 @@ struct BrowserShellView: View {
             suggestionsOverlay(anchor: anchor)
         }
         .overlay(alignment: .top) {
-            if topBarAutoHides {
-                topBarPeekOverlay.ignoresSafeArea(.container, edges: .top)
+            if addressBarPeeks {
+                // Hover the top edge to bring the bar down — only while no sidebar is out.
+                if !topBarPeeking && sidebarState == .hidden {
+                    Color.clear
+                        .frame(height: 6)
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                        .onHover { if $0 { topBarPeeking = true } }
+                        .ignoresSafeArea(.container, edges: .top)
+                }
             } else if trafficLightsHidden || windowButtonsPeeking {
                 windowButtonsHotZone.ignoresSafeArea(.container, edges: .top)
             }
@@ -230,6 +243,9 @@ struct BrowserShellView: View {
             if ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_AI_PANEL"] != nil {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { toggleAIPanel() }
             }
+            if ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_TOP_BAR"] != nil {
+                Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { _ in topBarPeeking.toggle() }
+            }
             #endif
             web.tabManager = tabManager
             if tabManager.currentTab == nil {
@@ -273,8 +289,10 @@ struct BrowserShellView: View {
                     }
                     if key == "l" {
                         DispatchQueue.main.async {
-                            if usesSidebar && !sidebarShown { sidebarPeeking = true }
-                            if topBarAutoHides { topBarPeeking = true }
+                            if addressBarPeeks {
+                                sidebarPeeking = false
+                                topBarPeeking = true
+                            }
                             addressBarFocused = true
                         }
                         return nil
@@ -379,6 +397,14 @@ struct BrowserShellView: View {
         }
         .onChange(of: trafficLightsHidden, initial: true) { _, _ in applyTrafficLights() }
         .onChange(of: windowButtonsPeeking) { _, _ in applyTrafficLights() }
+        // The top bar and the sidebar never show at the same time.
+        .onChange(of: sidebarPeeking) { _, peeking in
+            if peeking { topBarPeeking = false }
+        }
+        .onChange(of: addressBarFocused) { _, focused in
+            // ⌘L-revealed bar tucks away once editing ends, unless the pointer is on it.
+            if !focused && !topBarHovering { topBarPeeking = false }
+        }
         .onChange(of: hostWindow) { _, _ in applyTrafficLights() }
         .onChange(of: tabManager.currentTab) { _, _ in
             askOnPageVisible = false
@@ -461,16 +487,20 @@ struct BrowserShellView: View {
     private var layout: BrowserLayout { BrowserLayout(stored: layoutRaw) }
     private var usesSidebar: Bool { layout == .sidebar }
     /// Frameless mode in the sidebar layout means the sidebar auto-hides.
-    private var sidebarShown: Bool { usesSidebar && sidebarVisible && !frameless }
+    /// The docked sidebar steps aside while the top bar is down.
+    private var sidebarShown: Bool { usesSidebar && sidebarVisible && !frameless && !topBarPeeking }
     private var showsTopChrome: Bool { !usesSidebar && (!frameless || alwaysShowTopBar) }
     private var topBarAutoHides: Bool { !usesSidebar && frameless && !alwaysShowTopBar }
+    /// Helium-style address bar that slides in from the top edge (hover or ⌘L):
+    /// the frameless top layouts, and the sidebar layout, which has no URL field of its own.
+    private var addressBarPeeks: Bool { topBarAutoHides || usesSidebar }
     /// The left-edge tab list: a hidden sidebar, or the tab list in frameless top layouts.
     /// Window buttons disappear with the chrome they sit on (frameless, hidden sidebar)
     /// and come back while it's revealed.
     private var trafficLightsHidden: Bool {
         guard hideWindowButtons, !isFullScreen else { return false }
         guard !windowButtonsPeeking else { return false }
-        return (topBarAutoHides && !topBarPeeking) || (usesSidebar && !sidebarShown && !sidebarPeeking)
+        return (topBarAutoHides && !topBarPeeking) || (usesSidebar && !sidebarShown && !sidebarPeeking && !topBarPeeking)
     }
 
     private func applyTrafficLights() {
@@ -508,7 +538,8 @@ struct BrowserShellView: View {
 
     private func topChrome(showsTabs: Bool) -> some View {
         TopChromeView(
-            layout: layout,
+            // The sidebar layout borrows the compact row for its peek bar.
+            layout: usesSidebar ? .compact : layout,
             store: session.workspace,
             web: web,
             addressText: $addressBarText,
@@ -529,7 +560,7 @@ struct BrowserShellView: View {
             contentArea
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .shadow(color: .black.opacity(0.18), radius: 1.5, y: 0.5)
-                .padding(.top, showsTopChrome ? 0 : 8)
+                .padding(.top, showsTopChrome || topBarPeeking ? 0 : 8)
                 .padding(.bottom, 8)
                 .padding(.trailing, 8)
                 .padding(.leading, sidebarShown ? 0 : 8)
@@ -566,30 +597,21 @@ struct BrowserShellView: View {
         }
     }
 
-    /// Frameless top bar: always present, sliding in from above on hover.
-    private var topBarPeekOverlay: some View {
-        let height = TopChromeView.height(for: layout, showsTabs: false)
-        return ZStack(alignment: .top) {
-            topChrome(showsTabs: false)
-                .background(ZStack {
-                    VisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active)
-                    activeProfile.profileColor.color.opacity(0.14)
-                })
-                .shadow(color: .black.opacity(topBarPeeking ? 0.2 : 0), radius: 8, y: 2)
-                .offset(y: topBarPeeking ? 0 : -(height + 16))
-                .allowsHitTesting(topBarPeeking)
-                .onHover { inside in
-                    if topBarPeeking && !inside && !addressBarFocused { topBarPeeking = false }
-                }
-            if !topBarPeeking {
-                Color.clear
-                    .frame(height: 6)
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
-                    .onHover { if $0 { topBarPeeking = true } }
+    /// Address bar that slides down from the top edge (hover or ⌘L). It's part
+    /// of the window chrome, not a floating panel: it shares the window's
+    /// material and pushes the page down as it grows, then draws back up.
+    private var peekingTopBar: some View {
+        let height = TopChromeView.height(for: usesSidebar ? .compact : layout, showsTabs: false)
+        return topChrome(showsTabs: false)
+            .frame(height: height)
+            .frame(height: topBarPeeking ? height : 0, alignment: .bottom)
+            .clipped()
+            .opacity(topBarPeeking ? 1 : 0)
+            .allowsHitTesting(topBarPeeking)
+            .onHover { inside in
+                topBarHovering = inside
+                if topBarPeeking && !inside && !addressBarFocused { topBarPeeking = false }
             }
-        }
-        .animation(Self.chromeAnimation, value: topBarPeeking)
     }
 
     private func openAskOnPage() {
@@ -614,10 +636,7 @@ struct BrowserShellView: View {
         SidebarView(
             store: session.workspace,
             web: web,
-            addressText: $addressBarText,
-            addressFocused: $addressBarFocused,
             isFullScreen: isFullScreen,
-            isOnScreen: sidebarState != .hidden,
             actions: SidebarActions(
                 activate: { switchToTab($0) },
                 close: { closeTab($0) },
@@ -626,7 +645,6 @@ struct BrowserShellView: View {
                 tidyTitle: { session.tidyTitle($0) },
                 tidyToday: { session.tidyToday() }
             ),
-            onSubmitAddress: { applyAddressBarSubmit() },
             onToggleSidebar: toggleSidebar,
             onShowDownloads: { showDownloadsHub = true },
             extensions: session.extensions,
@@ -694,6 +712,7 @@ struct BrowserShellView: View {
                         webViewWrapper: web,
                         tabId: currentId,
                         messages: aiChatMessagesBinding(for: currentId),
+                        historyManager: historyManager,
                         onNavigate: { url in navigateToURL(url) }
                     )
                     .id(currentId)

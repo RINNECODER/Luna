@@ -35,6 +35,7 @@ struct SmartSearchView: View {
     let webViewWrapper: WebViewWrapper
     var tabId: UUID?
     @Binding var messages: [ChatMessage]
+    var historyManager: HistoryManager? = nil
     let onNavigate: (URL) -> Void
 
     @AppStorage("luma_ai_provider")    private var aiProviderRaw: String = AIProvider.gemini.rawValue
@@ -42,6 +43,7 @@ struct SmartSearchView: View {
     @AppStorage("luma_ollama_model")    private var ollamaModel: String = ""
     @AppStorage("luma_ai_panel_font_size") private var fontSizeRaw: Int = 13
     @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
+    @AppStorage(StartPagePrefs.showShortcuts) private var showShortcuts = true
 
     @State private var viewState: SearchViewState = .idle
     @State private var inputText: String = ""
@@ -166,10 +168,16 @@ struct SmartSearchView: View {
 
     private var centeredBarLayout: some View {
         GeometryReader { geo in
-            let topOffset = geo.size.height * 0.32
+            let h = geo.size.height
+            // Moon shrinks with the window and drops out when there's no room.
+            let moon = min(170, (h - 330) * 0.5)
+            let topOffset = max(16, h * 0.09)
+            ScrollView(.vertical, showsIndicators: false) {
             VStack(spacing: 0) {
-                AsciiMoon(diameter: 170, isBusy: isRouting)
-                    .padding(.bottom, -6)
+                if moon >= 64 {
+                    AsciiMoon(diameter: moon, isBusy: isRouting)
+                        .padding(.bottom, -6)
+                }
                 // Quiet greeting above the bar (Siri / ChatGPT-app style)
                 Text(Self.greeting())
                     .font(.system(size: 28, weight: .semibold, design: .rounded))
@@ -208,11 +216,20 @@ struct SmartSearchView: View {
 
                 unifiedSearchCard
                     .frame(maxWidth: SmartTokens.barMaxWidth)
-                Spacer(minLength: 0)
+
+                if inputText.isEmpty && showShortcuts {
+                    StartShortcutsRow(history: historyManager, onOpen: onNavigate)
+                        .frame(maxWidth: SmartTokens.barMaxWidth)
+                        .padding(.top, 28)
+                        .transition(.opacity)
+                }
             }
-            .padding(.horizontal, 32)
+            .padding(.horizontal, max(12, min(32, geo.size.width * 0.04)))
             .padding(.top, topOffset + searchBarOffset)
+            .padding(.bottom, 24)
             .frame(maxWidth: .infinity)
+            }
+            .scrollBounceBehavior(.basedOnSize)
         }
         .transition(.opacity)
     }

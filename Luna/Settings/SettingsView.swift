@@ -122,6 +122,10 @@ private struct AppearanceSettingsView: View {
     @AppStorage(ChromePrefs.showHomeButton) private var showHomeButton = false
     @AppStorage(ChromePrefs.hideWindowButtons) private var hideWindowButtons = true
     @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSize: Int = 13
+    @AppStorage(StartPagePrefs.showShortcuts) private var showShortcuts = true
+    @AppStorage(StartPagePrefs.showFrequent) private var showFrequent = true
+    @ObservedObject private var shortcutStore = ShortcutStore.shared
+    @State private var confirmRemoveShortcuts = false
 
     private var layout: Binding<BrowserLayout> {
         Binding(get: { BrowserLayout(stored: layoutRaw) }, set: { layoutRaw = $0.rawValue })
@@ -173,6 +177,30 @@ private struct AppearanceSettingsView: View {
                 if layout.wrappedValue != .sidebar {
                     Toggle("Show home button", isOn: $showHomeButton)
                 }
+            }
+
+            Section {
+                Toggle(isOn: $showShortcuts) {
+                    Text("Show shortcuts")
+                    Text("Site tiles under the search bar on the start page.")
+                }
+                Toggle(isOn: $showFrequent) {
+                    Text("Include frequently visited sites")
+                    Text("Fills spare tiles with the sites you visit most.")
+                }
+                .disabled(!showShortcuts)
+                HStack {
+                    Button("Remove All Shortcuts…") { confirmRemoveShortcuts = true }
+                        .disabled(shortcutStore.shortcuts.isEmpty)
+                    Button("Show Hidden Sites Again") { shortcutStore.unhideAll() }
+                        .disabled(shortcutStore.hiddenHosts.isEmpty)
+                }
+            } header: {
+                Text("Start page")
+            }
+            .confirmationDialog("Remove all \(shortcutStore.shortcuts.count) shortcuts?",
+                                isPresented: $confirmRemoveShortcuts) {
+                Button("Remove All", role: .destructive) { shortcutStore.removeAll() }
             }
 
             Section("AI panel") {
