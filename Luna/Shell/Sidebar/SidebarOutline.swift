@@ -81,7 +81,7 @@ struct SidebarOutline: NSViewRepresentable {
         let menu = NSMenu()
         menu.delegate = coordinator
         outline.menu = menu
-        outline.onReturnOrClick = { [weak coordinator] in coordinator?.rowClicked() }
+        outline.onRowClick = { [weak coordinator] row in coordinator?.rowClicked(row) }
 
         let scroll = NSScrollView()
         scroll.documentView = outline
@@ -318,9 +318,8 @@ struct SidebarOutline: NSViewRepresentable {
         }
 
         /// Clicks on rows that can't be selected (folders, New Tab).
-        func rowClicked() {
-            guard let outline, outline.clickedRow >= 0,
-                  let item = outline.item(atRow: outline.clickedRow) as? Item else { return }
+        func rowClicked(_ row: Int) {
+            guard let outline, row >= 0, let item = outline.item(atRow: row) as? Item else { return }
             switch item.kind {
             case .newTab: actions.newTab()
             case .node(.folder):
@@ -441,7 +440,9 @@ struct SidebarOutline: NSViewRepresentable {
 
 /// Outline view that reports single clicks (for rows that can't be selected).
 final class SidebarOutlineView: NSOutlineView {
-    var onReturnOrClick: (() -> Void)?
+    /// Clicked row, captured before AppKit handles the click: for rows that
+    /// can't be selected (New Tab, folders) `clickedRow` is reset afterward.
+    var onRowClick: ((Int) -> Void)?
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -449,7 +450,7 @@ final class SidebarOutlineView: NSOutlineView {
         // The disclosure triangle already toggles the folder itself.
         let onDisclosure = row >= 0 && frameOfOutlineCell(atRow: row).contains(point)
         super.mouseDown(with: event)
-        if !onDisclosure { onReturnOrClick?() }
+        if !onDisclosure { onRowClick?(row) }
     }
 
     // No focus ring / key-view highlight: the sidebar isn't a text target.

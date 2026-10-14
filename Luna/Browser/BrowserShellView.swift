@@ -86,6 +86,8 @@ struct BrowserShellView: View {
     @AppStorage(ChromePrefs.hideWindowButtons) private var hideWindowButtons = true
     /// Top bar temporarily shown in frameless mode (hover at the top edge, or ⌘L).
     @State private var topBarPeeking = false
+    /// Window buttons shown because the pointer is at the top edge (sidebar hidden).
+    @State private var windowButtonsPeeking = false
 
     var body: some View {
         ZStack {
@@ -170,10 +172,14 @@ struct BrowserShellView: View {
             suggestionsOverlay(anchor: anchor)
         }
         .overlay(alignment: .leading) {
-            if edgeTabListEnabled { sidebarPeekOverlay }
+            if edgeTabListEnabled { sidebarPeekOverlay.ignoresSafeArea(.container, edges: .top) }
         }
         .overlay(alignment: .top) {
-            if topBarAutoHides { topBarPeekOverlay }
+            if topBarAutoHides {
+                topBarPeekOverlay.ignoresSafeArea(.container, edges: .top)
+            } else if trafficLightsHidden || windowButtonsPeeking {
+                windowButtonsHotZone.ignoresSafeArea(.container, edges: .top)
+            }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.9), value: sidebarVisible)
         .overlay(alignment: .top) {
@@ -368,6 +374,7 @@ struct BrowserShellView: View {
             }
         }
         .onChange(of: trafficLightsHidden, initial: true) { _, _ in applyTrafficLights() }
+        .onChange(of: windowButtonsPeeking) { _, _ in applyTrafficLights() }
         .onChange(of: hostWindow) { _, _ in applyTrafficLights() }
         .onChange(of: tabManager.currentTab) { _, _ in
             askOnPageVisible = false
@@ -458,6 +465,7 @@ struct BrowserShellView: View {
     /// and come back while it's revealed.
     private var trafficLightsHidden: Bool {
         guard hideWindowButtons, !isFullScreen else { return false }
+        guard !windowButtonsPeeking else { return false }
         return (topBarAutoHides && !topBarPeeking) || (usesSidebar && !sidebarShown && !sidebarPeeking)
     }
 
@@ -527,6 +535,33 @@ struct BrowserShellView: View {
     }
 
     /// Frameless mode: a thin hot zone at the top edge reveals the top bar.
+    /// With the sidebar hidden there's no top bar: hovering the top edge brings
+    /// back the window buttons until the pointer moves away.
+    private var windowButtonsHotZone: some View {
+        Color.clear
+            .frame(height: 6)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                guard inside, !windowButtonsPeeking else { return }
+                windowButtonsPeeking = true
+                watchPointerLeavingTop()
+            }
+    }
+
+    private func watchPointerLeavingTop() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            guard windowButtonsPeeking, let window = hostWindow else { return }
+            let point = window.mouseLocationOutsideOfEventStream
+            let fromTop = (window.contentView?.bounds.height ?? 0) - point.y
+            if fromTop > 44 || point.x < 0 || point.x > window.frame.width {
+                windowButtonsPeeking = false
+            } else {
+                watchPointerLeavingTop()
+            }
+        }
+    }
+
     @ViewBuilder
     private var topBarPeekOverlay: some View {
         if topBarPeeking {

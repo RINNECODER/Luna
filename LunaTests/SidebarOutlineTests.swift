@@ -117,6 +117,23 @@ final class SidebarOutlineTests: XCTestCase {
         XCTAssertEqual(Set(store.visibleTabIds), [a, b])
     }
 
+    /// Clicking the New Tab row (not selectable) must still open a tab.
+    func testClickingNewTabRowOpensTab() throws {
+        _ = store.newTab(url: url("a"))
+        refresh()
+        let row = (0..<outline.numberOfRows).first { (outline.item(atRow: $0) as? SidebarOutline.Item)?.kind == .newTab }!
+        let rect = outline.rect(ofRow: row)
+        let point = outline.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+        func event(_ type: NSEvent.EventType) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        // Queue the mouse-up so the table's click tracking loop returns.
+        window.postEvent(event(.leftMouseUp), atStart: false)
+        outline.mouseDown(with: event(.leftMouseDown))
+        XCTAssertEqual(newTabs, 1)
+    }
+
     func testDividerAndNewTabRowsAreNotSelectable() {
         _ = store.newTab(url: url("a"))
         refresh()
