@@ -72,54 +72,22 @@ struct BrowserShellView: View {
     private let ollama = OllamaClient()
 
     // Layout constants
-    private let tabStripHeight: CGFloat = 38
-    private let addressBarHeight: CGFloat = 44
     private let chromeCornerRadius: CGFloat = 14
     private let chromePadding: CGFloat = 4
 
-    /// Profile color tint overlaid on the toolbar background (tab strip + address bar).
-    private var profileToolbarTint: Color { activeProfile.profileColor.color.opacity(0.18) }
-
-    /// Inactive tab background inherits a 10-15% lighter profile color variant.
-    private var profileInactiveTabColor: Color { activeProfile.profileColor.lightVariant.opacity(0.25) }
-
-    /// DIA-style: unified chrome color (tabs + address bar + content). Start page = dark; web page = page theme or default.
-    private var chromeColor: Color {
-        let hasURL = tabManager.currentTab.flatMap({ tabManager.tabURL[$0] ?? nil }) != nil
-        if !hasURL { return Color(white: 0.13) }
-        if let theme = web.pageThemeForActiveTab { return theme.color }
-        return Color(nsColor: .windowBackgroundColor)
-    }
-
-    /// true = dark background → use light text; false = light background → use dark text.
-    private var chromeTextIsLight: Bool {
-        let hasURL = tabManager.currentTab.flatMap({ tabManager.tabURL[$0] ?? nil }) != nil
-        if !hasURL { return true }
-        return web.pageThemeForActiveTab?.isDark ?? false
-    }
-
-    private var chromeText: Color { chromeTextIsLight ? .white : .black }
-    private var chromeTextMuted: Color { chromeTextIsLight ? Color.white.opacity(0.7) : Color.black.opacity(0.7) }
+    // Chrome options (Settings → Appearance)
+    @AppStorage(ChromePrefs.frameless) private var frameless = false
+    @AppStorage(ChromePrefs.alwaysShowTopBar) private var alwaysShowTopBar = false
+    @AppStorage(ChromePrefs.roundedFrame) private var roundedFrame = true
+    /// Top bar temporarily shown in frameless mode (hover at the top edge, or ⌘L).
+    @State private var topBarPeeking = false
 
     var body: some View {
-        // Compute tab strip visibility once
-        let currentURL = tabManager.currentTab.flatMap { tabManager.tabURL[$0] ?? nil }
-        let isStartPage = (currentURL == nil || currentURL?.absoluteString == "about:blank")
-        let shouldShowTabStrip = tabManager.tabCount() > 1 || !isStartPage
-        
-        return ZStack {
-            if usesSidebar {
-                VisualEffectView(material: .sidebar, blendingMode: .behindWindow, state: .followsWindowActiveState)
-                    .ignoresSafeArea()
-            } else {
-                Color(nsColor: .windowBackgroundColor)
-                    .ignoresSafeArea()
-            }
+        ZStack {
+            VisualEffectView(material: usesSidebar ? .sidebar : .titlebar, blendingMode: .behindWindow, state: .followsWindowActiveState)
+                .ignoresSafeArea()
 
-            // Configures the window titlebar to be tall enough to hold tabs.
-            // This is the key: it sets window.titlebarHeight so the traffic-light
-            // row is as tall as our tab strip (or default height when tabs hidden).
-            TitlebarConfigurator(tabStripHeight: shouldShowTabStrip ? tabStripHeight : 0, isFullScreen: $isFullScreen, hostWindow: $hostWindow)
+            TitlebarConfigurator(tabStripHeight: 0, isFullScreen: $isFullScreen, hostWindow: $hostWindow)
 
             GeometryReader { geometry in
                 HStack(spacing: 0) {
@@ -132,25 +100,13 @@ struct BrowserShellView: View {
 
                     // Main browser content
                     VStack(spacing: 0) {
-                        if usesSidebar {
-                            contentArea
-                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                                .shadow(color: .black.opacity(0.18), radius: 1.5, y: 0.5)
-                                .padding(.vertical, 8)
-                                .padding(.trailing, 8)
-                                .padding(.leading, sidebarShown ? 0 : 8)
-                        } else {
-                            topTabsChrome(shouldShowTabStrip: shouldShowTabStrip)
-                            contentArea
+                        if showsTopChrome {
+                            topChrome(showsTabs: !frameless)
                         }
+                        framedContent
                     }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeInOut(duration: 0.08), value: tabManager.currentTab)
-                .animation(.easeInOut(duration: 0.06), value: shouldShowTabStrip)
-                .animation(.easeInOut(duration: 0.06), value: tabManager.tabCount())
-                .overlay(alignment: .topLeading) {
-                    if !usesSidebar { suggestionsOverlay }
-                }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .animation(.easeInOut(duration: 0.08), value: tabManager.currentTab)
 
                     // ─── AI side panel (hidden on start page and AI chat) ────────
                     if let currentId = tabManager.currentTab, tabsWithPanelOpen.contains(currentId), !isCurrentTabStartOrAIChat {
@@ -199,26 +155,17 @@ struct BrowserShellView: View {
                 }
             }
         }
-        .ignoresSafeArea(.container, edges: usesSidebar ? .top : [])
-        .overlay(alignment: .topLeading) {
-            if usesSidebar { suggestionsOverlay }
+        .ignoresSafeArea(.container, edges: .top)
+        .overlayPreferenceValue(AddressFieldAnchorKey.self) { anchor in
+            suggestionsOverlay(anchor: anchor)
         }
         .overlay(alignment: .leading) {
-            if usesSidebar && !sidebarVisible { sidebarPeekOverlay }
+            if edgeTabListEnabled { sidebarPeekOverlay }
+        }
+        .overlay(alignment: .top) {
+            if topBarAutoHides { topBarPeekOverlay }
         }
         .animation(.spring(response: 0.3, dampingFraction: 0.9), value: sidebarVisible)
-        .overlay(alignment: .topLeading) {
-            if !usesSidebar, isStartPage || (currentURL?.scheme == "luma" && currentURL?.host == "ai") {
-                ProfileSwitcherView(
-                    profileManager: profileManager,
-                    activeProfileId: sessionStore.activeProfileId,
-                    onSwitch: switchToProfile,
-                    onOpenInNewWindow: openProfileInNewWindow
-                )
-                .padding(.leading, isFullScreen ? 12 : 82)
-                .padding(.top, shouldShowTabStrip ? 8 : 10)
-            }
-        }
         .alert("Confirm Action", isPresented: $showActionConfirm) {
             Button("Cancel", role: .cancel) { pendingAction = nil }
             Button("Execute") { executePendingAction() }
@@ -275,7 +222,8 @@ struct BrowserShellView: View {
                     }
                     if key == "l" {
                         DispatchQueue.main.async {
-                            if usesSidebar && !sidebarVisible { sidebarPeeking = true }
+                            if usesSidebar && !sidebarShown { sidebarPeeking = true }
+                            if topBarAutoHides { topBarPeeking = true }
                             addressBarFocused = true
                         }
                         return nil
@@ -442,8 +390,96 @@ struct BrowserShellView: View {
 
     // MARK: - Layout pieces
 
-    private var usesSidebar: Bool { BrowserLayout(rawValue: layoutRaw) != .topTabs }
-    private var sidebarShown: Bool { usesSidebar && sidebarVisible }
+    private var layout: BrowserLayout { BrowserLayout(stored: layoutRaw) }
+    private var usesSidebar: Bool { layout == .sidebar }
+    /// Frameless mode in the sidebar layout means the sidebar auto-hides.
+    private var sidebarShown: Bool { usesSidebar && sidebarVisible && !frameless }
+    private var showsTopChrome: Bool { !usesSidebar && (!frameless || alwaysShowTopBar) }
+    private var topBarAutoHides: Bool { !usesSidebar && frameless && !alwaysShowTopBar }
+    /// The left-edge tab list: a hidden sidebar, or the tab list in frameless top layouts.
+    private var edgeTabListEnabled: Bool { (usesSidebar && !sidebarShown) || (!usesSidebar && frameless) }
+
+    private var profileControl: some View {
+        ProfileSwitcherView(
+            profileManager: profileManager,
+            activeProfileId: sessionStore.activeProfileId,
+            onSwitch: switchToProfile,
+            onOpenInNewWindow: openProfileInNewWindow
+        )
+    }
+
+    private var topChromeActions: TopChromeActions {
+        TopChromeActions(
+            activate: { switchToTab($0) },
+            close: { closeTab($0) },
+            newTab: { newTab() },
+            reorder: { tabManager.moveTab(from: $0, to: $1) },
+            submitAddress: { applyAddressBarSubmit() },
+            goHome: { goHome() },
+            toggleAI: { toggleAIPanel() },
+            showDownloads: { showDownloadsHub = true },
+            showHistory: { navigateToHistory() }
+        )
+    }
+
+    private func topChrome(showsTabs: Bool) -> some View {
+        TopChromeView(
+            layout: layout,
+            store: session.workspace,
+            web: web,
+            addressText: $addressBarText,
+            addressFocused: $addressBarFocused,
+            isFullScreen: isFullScreen,
+            showsTabs: showsTabs,
+            downloadsCount: downloadManager.recentDownloads.count,
+            profileControl: AnyView(profileControl),
+            actions: topChromeActions
+        )
+    }
+
+    /// Web content, optionally inset in a rounded frame (Helium's "rounded frame").
+    @ViewBuilder
+    private var framedContent: some View {
+        if roundedFrame {
+            contentArea
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(0.18), radius: 1.5, y: 0.5)
+                .padding(.top, showsTopChrome ? 0 : 8)
+                .padding(.bottom, 8)
+                .padding(.trailing, 8)
+                .padding(.leading, sidebarShown ? 0 : 8)
+        } else {
+            contentArea
+        }
+    }
+
+    /// Frameless mode: a thin hot zone at the top edge reveals the top bar.
+    @ViewBuilder
+    private var topBarPeekOverlay: some View {
+        if topBarPeeking {
+            topChrome(showsTabs: false)
+                .background(VisualEffectView(material: .titlebar, blendingMode: .withinWindow, state: .active))
+                .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
+                .onHover { inside in
+                    if !inside && !addressBarFocused { topBarPeeking = false }
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
+        } else {
+            Color.clear
+                .frame(height: 6)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .onHover { if $0 { topBarPeeking = true } }
+        }
+    }
+
+    /// Home: show the start page in the current tab.
+    private func goHome() {
+        guard let id = tabManager.currentTab else { return newTab() }
+        web.removeWebView(for: id)
+        tabManager.navigate(tab: id, to: URL(string: "about:blank")!)
+        addressBarText = ""
+    }
 
     private var sidebar: some View {
         SidebarView(
@@ -461,12 +497,7 @@ struct BrowserShellView: View {
             onSubmitAddress: { applyAddressBarSubmit() },
             onToggleSidebar: toggleSidebar,
             onShowDownloads: { showDownloadsHub = true },
-            profileControl: AnyView(ProfileSwitcherView(
-                profileManager: profileManager,
-                activeProfileId: sessionStore.activeProfileId,
-                onSwitch: switchToProfile,
-                onOpenInNewWindow: openProfileInNewWindow
-            ))
+            profileControl: AnyView(profileControl)
         )
     }
 
@@ -498,186 +529,6 @@ struct BrowserShellView: View {
     private func toggleSidebar() {
         sidebarPeeking = false
         sidebarVisible.toggle()
-    }
-
-    @ViewBuilder
-    private func topTabsChrome(shouldShowTabStrip: Bool) -> some View {
-            // ─── Tab strip (toolbar stays dark; active tab uses chromeColor) ───
-            // Hide tab strip on start page when there's only one tab
-            if shouldShowTabStrip {
-                TabStripView(
-                    tabManager: tabManager,
-                    faviconURLByTab: web.faviconURLByTab,
-                    primaryTintByTab: web.primaryTintByTab,
-                    contentAreaColor: chromeColor,
-                    chromeTextIsLight: chromeTextIsLight,
-                    profileInactiveTabColor: profileInactiveTabColor,
-                    onSwitch: { switchToTab($0) },
-                    onClose: { closeTab($0) },
-                    onNewTab: newTab,
-                    onDropURLForNewTab: { newTabWithURL($0) },
-                    onReorder: { tabManager.moveTab(from: $0, to: $1) }
-                )
-                .frame(height: tabStripHeight)
-                .padding(.leading, isFullScreen ? 8 : 78)
-                .padding(.trailing, 8)
-                .padding(.top, isFullScreen ? 0 : -(tabStripHeight - 6))
-                .background(
-                    ZStack {
-                        Color(white: 0.12)
-                        profileToolbarTint
-                    }
-                )
-                .animation(.easeInOut(duration: 0.25), value: sessionStore.activeProfileId)
-                .transition(.move(edge: .top).combined(with: .opacity))
-                .animation(.easeInOut(duration: 0.2), value: isFullScreen)
-            }
-
-            // ─── Address bar row (hidden on start page and AI chat; single centered bar is the search there) ───
-            if let cid = tabManager.currentTab,
-               let u = tabManager.tabURL[cid] ?? nil,
-               u.absoluteString != "about:blank",
-               !(u.scheme == "luma" && u.host == "ai") {
-                HStack(spacing: 6) {
-                    // Profile switcher bubble (left of nav buttons)
-                    ProfileSwitcherView(
-                        profileManager: profileManager,
-                        activeProfileId: sessionStore.activeProfileId,
-                        onSwitch: { profile in switchToProfile(profile) },
-                        onOpenInNewWindow: { profile in openProfileInNewWindow(profile) }
-                    )
-                    .padding(.leading, 4)
-
-                    // Nav buttons (Safari-style: quiet, circular hover highlight)
-                    HStack(spacing: 2) {
-                        ChromeIconButton(
-                            systemName: "chevron.left",
-                            tint: chromeText,
-                            isEnabled: web.canGoBackForActiveTab,
-                            accessibilityLabel: "Back"
-                        ) { if let id = tabManager.currentTab { web.goBack(in: id) } }
-
-                        ChromeIconButton(
-                            systemName: "chevron.right",
-                            tint: chromeText,
-                            isEnabled: web.canGoForwardForActiveTab,
-                            accessibilityLabel: "Forward"
-                        ) { if let id = tabManager.currentTab { web.goForward(in: id) } }
-
-                        ChromeIconButton(
-                            systemName: "arrow.clockwise",
-                            tint: chromeText,
-                            accessibilityLabel: "Reload"
-                        ) { if let id = tabManager.currentTab { web.reload(in: id) } }
-                    }
-
-                    // Omnibox (unified look: subtle overlay on chrome)
-                    HStack(spacing: 8) {
-                        Image(systemName: "globe")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(chromeTextMuted)
-
-                        TextField("Search or enter website name", text: $addressBarText)
-                            .textFieldStyle(.plain)
-                            .foregroundColor(chromeText)
-                            .focused($addressBarFocused)
-                            .onSubmit {
-                                applyAddressBarSubmit()
-                            }
-                            .onChange(of: addressBarText) { _, newValue in
-                                fetchHistorySuggestions(for: newValue)
-                                fetchSearchSuggestions(for: newValue)
-                            }
-                            .onChange(of: addressBarFocused) { _, focused in
-                                if !focused {
-                                    searchSuggestions = []
-                                    historySuggestions = []
-                                    addressBarKeyState.visible = false
-                                }
-                            }
-                            .onTapGesture {
-                                selectAllAddressBarText()
-                            }
-
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(chromeTextMuted)
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .frame(maxWidth: .infinity)
-                    .background(Capsule(style: .continuous).fill(chromeText.opacity(0.10)))
-                    .overlay(
-                        Capsule(style: .continuous)
-                            .strokeBorder(
-                                addressBarFocused ? Color.accentColor.opacity(0.7) : chromeText.opacity(0.08),
-                                lineWidth: addressBarFocused ? 1.5 : 1
-                            )
-                    )
-                    .animation(.easeInOut(duration: 0.12), value: addressBarFocused)
-                    .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
-                        handleURLDrop(providers: providers) { url in
-                            addressBarText = url.absoluteString
-                            navigateToURL(url)
-                        }
-                    }
-
-                    // Chat pill (sparkles: matches the system assistant iconography)
-                    Button(action: toggleAIPanel) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 11, weight: .medium))
-                            Text("Chat")
-                                .font(.system(size: 12, weight: .medium))
-                        }
-                        .foregroundColor(chromeText)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 6)
-                        .background(Capsule(style: .continuous).fill(chromeText.opacity(0.12)))
-                        .overlay(Capsule(style: .continuous).strokeBorder(chromeText.opacity(0.08), lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Toggle AI panel")
-
-                    // Downloads hub (heartbeat on new download + count badge)
-                    Button(action: { showDownloadsHub = true }) {
-                        ZStack(alignment: .topTrailing) {
-                            Image(systemName: "arrow.down.circle")
-                                .font(.system(size: 16, weight: .medium))
-                                .foregroundColor(chromeText.opacity(0.9))
-                                .frame(width: 28, height: 28)
-                                .contentShape(Rectangle())
-                                .scaleEffect(downloadIconScale)
-                            if !downloadManager.recentDownloads.isEmpty {
-                                Text(downloadManager.recentDownloads.count > 99 ? "99+" : "\(downloadManager.recentDownloads.count)")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 2)
-                                    .background(Capsule().fill(Color.accentColor))
-                                    .offset(x: 6, y: -6)
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Downloads")
-                    .onChange(of: downloadManager.recentDownloads.count) { oldCount, newCount in
-                        if newCount > oldCount { runDownloadsHeartbeat() }
-                    }
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .frame(height: addressBarHeight)
-                .frame(maxWidth: .infinity)
-                .background(
-                    ZStack {
-                        chromeColor
-                        profileToolbarTint
-                    }
-                )
-                .animation(.easeInOut(duration: 0.25), value: sessionStore.activeProfileId)
-                .animation(.easeInOut(duration: 0.06), value: chromeColor)
-            }
     }
 
     @ViewBuilder
@@ -775,16 +626,15 @@ struct BrowserShellView: View {
             }
     }
 
+    /// Address suggestions, placed under whichever address field is on screen.
     @ViewBuilder
-    private var suggestionsOverlay: some View {
-            // Address bar suggestions: history (URL/title) first, then search; show when any suggestion exists
-            let hasSuggestions = !historySuggestions.isEmpty || !searchSuggestions.isEmpty
-            // Top tabs hide the address bar on the start page; the sidebar URL field is always there.
-            if usesSidebar || (tabManager.currentTab.flatMap({ tabManager.tabURL[$0] ?? nil }) != nil &&
-               (tabManager.currentTab.flatMap { tabManager.tabURL[$0] ?? nil }?.absoluteString ?? "") != "about:blank"),
-               addressBarFocused,
-               !addressBarText.trimmingCharacters(in: .whitespaces).isEmpty,
-               hasSuggestions {
+    private func suggestionsOverlay(anchor: Anchor<CGRect>?) -> some View {
+        let hasSuggestions = !historySuggestions.isEmpty || !searchSuggestions.isEmpty
+        if let anchor, addressBarFocused,
+           !addressBarText.trimmingCharacters(in: .whitespaces).isEmpty,
+           hasSuggestions {
+            GeometryReader { proxy in
+                let field = proxy[anchor]
                 AddressBarSuggestionsList(
                     historyItems: historySuggestions,
                     searchPhrases: Array(searchSuggestions.prefix(5)),
@@ -803,13 +653,11 @@ struct BrowserShellView: View {
                         navigateFromAddressBar()
                     }
                 )
-                .background(Color(nsColor: .windowBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .shadow(color: .black.opacity(0.15), radius: 8)
-                .frame(maxWidth: usesSidebar ? 460 : nil)
-                .padding(.top, usesSidebar ? SidebarView.topRowHeight + 30 + 6 : addressBarHeight + chromePadding + 6)
-                .padding(.leading, usesSidebar ? 8 : chromePadding + 6 + 84 + 8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(.regularMaterial)
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                .frame(width: max(field.width, 440))
+                .offset(x: field.minX, y: field.maxY + 6)
                 .onAppear {
                     addressBarKeyState.visible = true
                     addressBarKeyState.totalCount = historySuggestions.count + searchSuggestions.count
@@ -817,6 +665,7 @@ struct BrowserShellView: View {
                 }
                 .onDisappear { addressBarKeyState.visible = false }
             }
+        }
     }
 
     // MARK: - Profile switching
@@ -1122,8 +971,8 @@ struct BrowserShellView: View {
         web.setActiveTab(id)
         web.load(url: URL(string: "about:blank")!, in: id)
         addressBarText = ""
-        // The start page has its own input; in sidebar mode don't steal focus for the URL field.
-        addressBarFocused = !usesSidebar
+        // Cmd+T opens the AI start page, which focuses its own input.
+        addressBarFocused = false
     }
 
     private func closeCurrentTab() {
@@ -1539,306 +1388,6 @@ private struct PanelResizeHandle: View {
             )
     }
 }
-// MARK: - Tab strip (Chrome-style dynamic width: min/max, clamp, overflow)
-// Parent applies .padding(.leading, 78) to clear traffic lights.
-
-private struct TabStripView: View {
-    @ObservedObject var tabManager: TabManager
-    let faviconURLByTab: [UUID: URL?]
-    let primaryTintByTab: [UUID: NSColor]
-    let contentAreaColor: Color
-    let chromeTextIsLight: Bool
-    let profileInactiveTabColor: Color
-    let onSwitch: (UUID) -> Void
-    let onClose: (UUID) -> Void
-    let onNewTab: () -> Void
-    let onDropURLForNewTab: (URL) -> Void
-    let onReorder: (Int, Int) -> Void
-
-    @State private var draggedTab: UUID? = nil
-    private let rowHeight: CGFloat = 30
-
-    /// Chrome-style tab geometry: ideal = W/N, tabWidth = clamp(ideal, min, max); overflow → shrink to emergency min.
-    private static let minTabWidth: CGFloat = 80
-    private static let maxTabWidth: CGFloat = 240
-    private static let emergencyMinTabWidth: CGFloat = 44
-    private static let newTabButtonWidth: CGFloat = 32
-    private static let newTabGap: CGFloat = 4
-
-    var body: some View {
-        GeometryReader { geometry in
-            let N = tabManager.tabCount()
-            let W = max(0, geometry.size.width - Self.newTabButtonWidth - Self.newTabGap)
-            let ideal = N > 0 ? W / CGFloat(N) : 0
-            // Chrome-style: roomy → clamp(ideal, min, max); cramped → shrink to emergency min so strip doesn’t overflow
-            let tabWidth: CGFloat = N > 0
-                ? min(Self.maxTabWidth, ideal >= Self.minTabWidth ? ideal : max(Self.emergencyMinTabWidth, ideal))
-                : 0
-
-            HStack(spacing: 0) {
-                ForEach(Array(tabManager.tabOrder.enumerated()), id: \.element) { index, tabId in
-                    TabPill(
-                        tabId: tabId,
-                        index: index + 1,
-                        url: tabManager.tabURL[tabId] ?? nil,
-                        title: tabManager.tabTitle[tabId],
-                        faviconURL: faviconURLByTab[tabId] ?? nil,
-                        primaryTint: primaryTintByTab[tabId],
-                        isActive: tabManager.currentTab == tabId,
-                        contentAreaColor: contentAreaColor,
-                        chromeTextIsLight: chromeTextIsLight,
-                        profileInactiveTabColor: profileInactiveTabColor,
-                        showTitle: tabWidth >= Self.minTabWidth,
-                        onSelect: { onSwitch(tabId) },
-                        onClose: { onClose(tabId) }
-                    )
-                    .background(NonDraggableWindowView())
-                    .frame(width: tabWidth, height: rowHeight)
-                    .id(tabId)
-                    .opacity(draggedTab == tabId ? 0.5 : 1.0)
-                    .onDrag {
-                        draggedTab = tabId
-                        return NSItemProvider(object: tabId.uuidString as NSString)
-                    }
-                    .onDrop(of: [.plainText], delegate: TabDropDelegate(
-                        destinationTab: tabId,
-                        tabManager: tabManager,
-                        draggedTab: $draggedTab,
-                        onReorder: onReorder
-                    ))
-                }
-
-                Button(action: onNewTab) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
-                        .frame(width: 32, height: rowHeight - 4)
-                        .contentShape(Rectangle())
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.22).opacity(0.6)))
-                }
-                .background(NonDraggableWindowView())
-                .buttonStyle(.plain)
-                .accessibilityLabel("New tab")
-                .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
-                    urlDropHandler(providers: providers)
-                }
-
-                // Only the empty toolbar space moves the window; tabs stay stationary for reordering
-                WindowDragRegionView()
-                    .frame(maxWidth: .infinity)
-                    .allowsHitTesting(true)
-            }
-            .frame(maxWidth: .infinity)
-            .animation(.easeInOut(duration: 0.06), value: tabManager.tabCount())
-            .animation(.easeInOut(duration: 0.06), value: geometry.size.width)
-        }
-        .frame(maxWidth: .infinity)
-        .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
-            urlDropHandler(providers: providers)
-        }
-    }
-
-    private func urlDropHandler(providers: [NSItemProvider]) -> Bool {
-        // A tab dropped outside any tab pill lands here; reset the drag ghost.
-        draggedTab = nil
-        guard let provider = providers.first else { return false }
-        if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let u = url, (u.scheme == "http" || u.scheme == "https" || u.scheme == "file") {
-                    DispatchQueue.main.async { onDropURLForNewTab(u) }
-                }
-            }
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                if let u = url { DispatchQueue.main.async { onDropURLForNewTab(u) } }
-            }
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-            _ = provider.loadObject(ofClass: String.self) { str, _ in
-                if let s = str?.trimmingCharacters(in: .whitespacesAndNewlines),
-                   let u = URL(string: s),
-                   u.scheme == "http" || u.scheme == "https" {
-                    DispatchQueue.main.async { onDropURLForNewTab(u) }
-                }
-            }
-        }
-        return true
-    }
-}
-
-/// Safari-style toolbar icon button: no persistent fill, circular highlight on
-/// hover, tinted to the adaptive chrome text color.
-private struct ChromeIconButton: View {
-    let systemName: String
-    let tint: Color
-    var isEnabled: Bool = true
-    var size: CGFloat = 28
-    var iconSize: CGFloat = 12
-    let accessibilityLabel: String
-    let action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: iconSize, weight: .medium))
-                .foregroundColor(isEnabled ? tint : tint.opacity(0.3))
-                .frame(width: size, height: size)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .background(Circle().fill(tint.opacity(isHovering && isEnabled ? 0.14 : 0)))
-        .onHover { isHovering = $0 }
-        .disabled(!isEnabled)
-        .accessibilityLabel(accessibilityLabel)
-        .animation(.easeOut(duration: 0.12), value: isHovering)
-    }
-}
-
-private struct TabPill: View {
-    let tabId: UUID
-    let index: Int
-    let url: URL?
-    let title: String?
-    let faviconURL: URL?
-    let primaryTint: NSColor?
-    let isActive: Bool
-    let contentAreaColor: Color
-    let chromeTextIsLight: Bool
-    let profileInactiveTabColor: Color
-    /// When false (cramped strip), show only favicon to fit; when true, show title too.
-    let showTitle: Bool
-    let onSelect: () -> Void
-    let onClose: () -> Void
-    @State private var isHovered = false
-
-    private var displayTitle: String {
-        // Use provided title from page if available
-        if let title = title, !title.isEmpty { return title }
-        
-        // Fallback to URL-based titles
-        if url == nil || url?.absoluteString == "about:blank" { return "New Tab" }
-        if url?.scheme == "luma", url?.host == "history" { return "History" }
-        if url?.scheme == "luma", url?.host == "ai" { return "AI Chat" }
-        if url?.scheme == "file" { return url?.lastPathComponent ?? "File" }
-        return url?.host ?? url?.absoluteString ?? "New Tab"
-    }
-    private var tabTextColor: Color {
-        if url?.scheme == "luma" {
-            return isActive ? .white : .white.opacity(0.7)
-        }
-        // Active tab matches page tint; inactive tabs are neutral.
-        if isActive { return chromeTextIsLight ? .white : .black }
-        return .white.opacity(0.7)
-    }
-
-    private var tabBackgroundColor: Color {
-        // Active tab: mirrors the current page color.
-        // Inactive tabs: use the profile's lighter color variant so the profile identity shows.
-        if isActive { return contentAreaColor }
-        return isHovered
-            ? profileInactiveTabColor.opacity(0.9)
-            : profileInactiveTabColor.opacity(0.65)
-    }
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Button(action: onSelect) {
-                HStack(spacing: showTitle ? 6 : 0) {
-                    Group {
-                        if let url = url, url.scheme == "luma", url.host == "ai" {
-                            Image(systemName: "bubble.left.and.bubble.right.fill")
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(tabTextColor)
-                        } else if let url = url {
-                            FaviconView(url: url, faviconURL: faviconURL)
-                                .frame(width: 14, height: 14)
-                        } else {
-                            Image(systemName: "globe")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(tabTextColor)
-                        }
-                    }
-                    .frame(width: 14, height: 14, alignment: .center)
-                    if showTitle {
-                        Text(displayTitle)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(tabTextColor)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(.leading, 8)
-                .padding(.trailing, showTitle ? 4 : 6)
-                .padding(.vertical, 4)
-                .contentShape(Rectangle())
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.plain)
-
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(tabTextColor.opacity(0.8))
-                    .frame(width: 20, height: 20)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .opacity(isHovered || isActive ? 1 : 0)
-            .allowsHitTesting(isHovered || isActive)
-        }
-        .onHover { isHovered = $0 }
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(tabBackgroundColor)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color.white.opacity(isActive ? 0.10 : 0), lineWidth: 1)
-        )
-        .animation(.easeInOut(duration: 0.06), value: contentAreaColor)
-        .animation(.easeInOut(duration: 0.06), value: isHovered)
-        .animation(.easeInOut(duration: 0.06), value: isActive)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Tab \(index): \(displayTitle)")
-        .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
-    }
-}
-
-private extension TabPill {
-    static func relativeLuminance(_ color: NSColor) -> CGFloat {
-        guard let rgb = color.usingColorSpace(.deviceRGB) else { return 0 }
-        func toLinear(_ c: CGFloat) -> CGFloat {
-            (c <= 0.03928) ? (c / 12.92) : pow((c + 0.055) / 1.055, 2.4)
-        }
-        let r = toLinear(rgb.redComponent)
-        let g = toLinear(rgb.greenComponent)
-        let b = toLinear(rgb.blueComponent)
-        return 0.2126 * r + 0.7152 * g + 0.0722 * b
-    }
-}
-
-private extension NSColor {
-    func desaturated(multiplier: CGFloat) -> NSColor {
-        guard let rgb = usingColorSpace(.deviceRGB) else { return self }
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        return NSColor(hue: h, saturation: max(0, min(1, s * multiplier)), brightness: b, alpha: a)
-    }
-
-    func dimBrightness(multiplier: CGFloat) -> NSColor {
-        guard let rgb = usingColorSpace(.deviceRGB) else { return self }
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        rgb.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
-        return NSColor(hue: h, saturation: s, brightness: max(0, min(1, b * multiplier)), alpha: a)
-    }
-
-    func withAlpha(_ alpha: CGFloat) -> NSColor {
-        withAlphaComponent(max(0, min(1, alpha)))
-    }
-}
-
 // MARK: - NSViewRepresentables
 
 struct WebViewContainer: NSViewRepresentable {
@@ -1858,38 +1407,6 @@ struct NonDraggableWindowView: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-// MARK: - Tab Drop Delegate (smooth live reordering during drag)
-
-private struct TabDropDelegate: DropDelegate {
-    let destinationTab: UUID
-    // Live reference (class) so indices are always computed against the current
-    // order; a captured array snapshot goes stale mid-drag and scrambles tabs.
-    let tabManager: TabManager
-    @Binding var draggedTab: UUID?
-    let onReorder: (Int, Int) -> Void
-    
-    func dropEntered(info: DropInfo) {
-        guard let draggedTab = draggedTab else { return }
-        guard let fromIndex = tabManager.tabOrder.firstIndex(of: draggedTab),
-              let toIndex = tabManager.tabOrder.firstIndex(of: destinationTab),
-              fromIndex != toIndex else { return }
-        
-        withAnimation(.easeInOut(duration: 0.25)) {
-            onReorder(fromIndex, toIndex)
-        }
-    }
-    
-    func performDrop(info: DropInfo) -> Bool {
-        draggedTab = nil
-        return true
-    }
-    
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-}
-
-/// NSView that allows window drag only when hit (used for empty toolbar space).
 // MARK: - Browser Find Bar (Cmd+F)
 
 private struct BrowserFindBar: View {

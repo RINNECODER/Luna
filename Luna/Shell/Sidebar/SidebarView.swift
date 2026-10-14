@@ -59,53 +59,14 @@ struct SidebarView: View {
 
     // MARK: URL field
 
-    private var isWebPage: Bool {
-        guard let url = activeTab?.url else { return false }
-        return url.scheme == "http" || url.scheme == "https" || url.isFileURL
-    }
-
-    private var displayHost: String {
-        guard let url = activeTab?.url, isWebPage else { return "" }
-        if url.isFileURL { return url.lastPathComponent }
-        let host = url.host ?? url.absoluteString
-        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-    }
-
     private var urlField: some View {
-        let focused = addressFocused.wrappedValue
-        return HStack(spacing: 6) {
-            if isWebPage, !focused {
-                Image(systemName: activeTab?.url?.scheme == "https" ? "lock.fill" : "globe")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.tertiary)
-            }
-            ZStack(alignment: .leading) {
-                TextField("Search or enter address", text: $addressText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused(addressFocused)
-                    .onSubmit(onSubmitAddress)
-                    .opacity(focused || displayHost.isEmpty ? 1 : 0)
-                if !focused, !displayHost.isEmpty {
-                    Text(displayHost)
-                        .font(.system(size: 13))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .allowsHitTesting(false)
-                }
-            }
-            if let id = store.activeTabId, let progress = web.loadingProgressByTab[id], !focused {
-                ProgressView(value: max(progress, 0.1))
-                    .progressViewStyle(.circular)
-                    .controlSize(.mini)
-            }
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 30)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.quaternary.opacity(focused ? 1 : 0.7)))
-        .focusShadow(focused)
-        .contentShape(Rectangle())
-        .onTapGesture { addressFocused.wrappedValue = true }
+        AddressField(
+            url: activeTab?.url,
+            text: $addressText,
+            focused: addressFocused,
+            loadingProgress: store.activeTabId.flatMap { web.loadingProgressByTab[$0] },
+            onSubmit: onSubmitAddress
+        )
     }
 
     // MARK: Bottom bar
