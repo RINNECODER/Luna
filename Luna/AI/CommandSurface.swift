@@ -352,8 +352,6 @@ struct CommandSurfaceView: View {
                 .padding(.bottom, 8)
             }
 
-            let isGlowActive = isInputFocused || !inputText.isEmpty
-
             HStack(alignment: .bottom, spacing: 0) {
                 Menu {
                     Button(action: { addTabsSheetPresented = true }) {
@@ -417,14 +415,7 @@ struct CommandSurfaceView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .lunaGlass(cornerRadius: 20, interactive: true)
-            .background(
-                AuroraGlow(
-                    shape: RoundedRectangle(cornerRadius: 20, style: .continuous),
-                    isActive: isGlowActive,
-                    lineWidth: 1.5
-                )
-            )
-            .animation(.easeInOut(duration: 0.06), value: isGlowActive)
+            .overlay(FocusRing(shape: RoundedRectangle(cornerRadius: 20, style: .continuous), isActive: isInputFocused))
             .accessibilityLabel("Message input")
             .accessibilityHint("Type your message. Enter to send.")
             .padding(.horizontal, 16)

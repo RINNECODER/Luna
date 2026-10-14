@@ -425,7 +425,6 @@ struct SmartSearchView: View {
     }
 
     private var chatInputBar: some View {
-        let isGlowActive = isInputFocused || !inputText.isEmpty
         return VStack(spacing: 0) {
             // Context chips row
             if !includedOtherTabIds.isEmpty || !attachedDocuments.isEmpty {
@@ -516,13 +515,7 @@ struct SmartSearchView: View {
             .padding(.vertical, 10)
             .frame(maxWidth: SmartTokens.chatMaxWidth)
             .lunaGlass(cornerRadius: 22, interactive: true)
-            .background(
-                AuroraGlow(
-                    shape: RoundedRectangle(cornerRadius: 22, style: .continuous),
-                    isActive: isGlowActive
-                )
-            )
-            .animation(.easeInOut(duration: 0.06), value: isGlowActive)
+            .overlay(FocusRing(shape: RoundedRectangle(cornerRadius: 22, style: .continuous), isActive: isInputFocused))
         }
         .padding(.horizontal, 32)
         .padding(.bottom, 20)
@@ -531,7 +524,6 @@ struct SmartSearchView: View {
     // MARK: - Unified search card (Dia-style two-row layout)
 
     private var unifiedSearchCard: some View {
-        let isGlowActive = isInputFocused || !inputText.isEmpty
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
 
         return VStack(spacing: 0) {
@@ -615,13 +607,7 @@ struct SmartSearchView: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .lunaGlass(cornerRadius: 22, interactive: true)
-        .background(
-            AuroraGlow(
-                shape: RoundedRectangle(cornerRadius: 22, style: .continuous),
-                isActive: isGlowActive
-            )
-        )
-        .animation(.easeInOut(duration: 0.1), value: isGlowActive)
+        .overlay(FocusRing(shape: RoundedRectangle(cornerRadius: 22, style: .continuous), isActive: isInputFocused))
     }
 
     // MARK: - Dynamic submit button
