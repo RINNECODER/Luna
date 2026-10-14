@@ -29,20 +29,26 @@ enum ProfileStoreRegistry {
 /// Browser state owned by exactly one profile.
 final class ProfileSession: ObservableObject {
     let profileId: UUID
+    let workspace: WorkspaceStore
     let tabManager: TabManager
     let webViewWrapper: WebViewWrapper
     let historyManager: HistoryManager
     let chatStore: ChatStore
 
     private var cancellables: Set<AnyCancellable> = []
+    private var knownTabIds: Set<UUID> = []
+    private var lastActiveTabId: UUID?
 
     // Avoid the MainActor isolated-deinit executor hop that double-frees
     // task-local storage on current macOS runtimes (swiftlang/swift#88036).
     nonisolated deinit {}
 
-    init(profileId: UUID, dataStore: WKWebsiteDataStore) {
+    /// - Parameter workspace: injected store (tests); by default the profile's
+    ///   persisted workspace when no other window owns it, else in-memory.
+    init(profileId: UUID, dataStore: WKWebsiteDataStore, workspace: WorkspaceStore? = nil) {
         self.profileId = profileId
-        self.tabManager = TabManager()
+        self.workspace = workspace ?? WorkspaceOwnership.makeStore(for: profileId)
+        self.tabManager = TabManager(store: self.workspace)
         let stores = ProfileStoreRegistry.stores(for: profileId)
         self.historyManager = stores.history
         self.chatStore = stores.chats
@@ -54,30 +60,81 @@ final class ProfileSession: ObservableObject {
             tabManager?.updateTitle(tab: tabId, title: title)
             historyManager?.recordPageVisit(url: url, title: title)
         }
+        self.workspace.captureInteractionStates = { [weak webViewWrapper] in
+            webViewWrapper?.interactionStates() ?? [:]
+        }
 
         tabManager.objectWillChange
             .merge(with: webViewWrapper.objectWillChange, historyManager.objectWillChange, chatStore.objectWillChange)
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
-        let tabId = tabManager.newTab(url: nil)
-        webViewWrapper.setActiveTab(tabId)
+        // Restore: guarantee an active tab, then lazily load it.
+        let store = self.workspace
+        if store.orderedTabIds.isEmpty {
+            _ = store.newTab(url: nil)
+        } else if store.activeTabId == nil, let first = store.orderedTabIds.first {
+            store.activate(first)
+        }
+        knownTabIds = Set(store.workspace.tabs.keys)
+        lastActiveTabId = store.activeTabId
+
+        // Switching to an existing tab that has no web view (restored, reset
+        // pinned tab, hibernated) loads it. Brand-new tabs are loaded by whoever
+        // created them, so they're skipped here.
+        store.$workspace
+            .sink { [weak self] ws in self?.workspaceWillChange(to: ws) }
+            .store(in: &cancellables)
+
+        if let tabId = store.activeTabId {
+            webViewWrapper.setActiveTab(tabId)
+            // Deferred so the restored page loads after the window has rendered.
+            DispatchQueue.main.async { [weak self] in self?.ensureLoaded(tabId) }
+        }
     }
 
     func activate() {
-        guard let tabId = tabManager.currentTab else { return }
+        guard let tabId = workspace.activeTabId else { return }
         webViewWrapper.setActiveTab(tabId)
-        guard let url = tabManager.tabURL[tabId] ?? nil,
+        ensureLoaded(tabId)
+    }
+
+    /// Creates and loads (or restores) the tab's web view if it has none.
+    func ensureLoaded(_ tabId: UUID) {
+        // The shell may already have created an empty web view while rendering.
+        if let wv = webViewWrapper.webViewIfLoaded(for: tabId), wv.url != nil || wv.isLoading { return }
+        guard let tab = workspace.tab(tabId),
+              let url = tab.url,
               url.absoluteString != "about:blank",
-              url.scheme != "luma",
-              webViewWrapper.webViewIfLoaded(for: tabId) == nil else { return }
-        webViewWrapper.load(url: url, in: tabId)
+              url.scheme != "luma" else { return }
+        if let state = tab.interactionState {
+            webViewWrapper.restore(interactionState: state, fallbackURL: url, in: tabId)
+            workspace.clearInteractionState(tabId)
+        } else {
+            webViewWrapper.load(url: url, in: tabId)
+        }
     }
 
     func suspend() {
+        workspace.flush()
         historyManager.flush()
         chatStore.flush()
         webViewWrapper.removeAllWebViews()
+        WorkspaceOwnership.release(workspace, profileId: profileId)
+    }
+
+    private func workspaceWillChange(to ws: Workspace) {
+        let newActive = ws.activeTabId
+        let existedBefore = newActive.map { knownTabIds.contains($0) } ?? false
+        knownTabIds = Set(ws.tabs.keys)
+        guard newActive != lastActiveTabId else { return }
+        lastActiveTabId = newActive
+        guard let id = newActive, existedBefore else { return }
+        // `$workspace` fires before the value is stored; load once it's committed.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.workspace.activeTabId == id else { return }
+            self.ensureLoaded(id)
+        }
     }
 }
 
@@ -152,6 +209,7 @@ final class BrowserSessionStore: ObservableObject {
 
     func flush() {
         sessions.values.forEach {
+            $0.workspace.flush()
             $0.historyManager.flush()
             $0.chatStore.flush()
         }

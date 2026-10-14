@@ -435,6 +435,28 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         }
     }
 
+    /// Restores a tab's back/forward list and current page from saved
+    /// `interactionState`; falls back to a plain load if WebKit rejects it.
+    func restore(interactionState: Data, fallbackURL: URL, in tabId: UUID) {
+        let wv = ensureWebView(for: tabId)
+        wv.customUserAgent = Self.userAgent(for: fallbackURL)
+        wv.interactionState = interactionState
+        if wv.url == nil && !wv.isLoading {
+            load(url: fallbackURL, in: tabId)
+        } else if activeTab == tabId {
+            currentURL = wv.url ?? fallbackURL
+        }
+    }
+
+    /// Back/forward state for every live web page, for session persistence.
+    func interactionStates() -> [UUID: Data] {
+        var result: [UUID: Data] = [:]
+        for (id, wv) in webViews where wv.url != nil {
+            if let data = wv.interactionState as? Data { result[id] = data }
+        }
+        return result
+    }
+
     func goBack(in tabId: UUID) {
         guard let wv = webViews[tabId], wv.canGoBack else { return }
         wv.goBack()
