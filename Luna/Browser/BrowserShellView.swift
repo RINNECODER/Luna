@@ -60,6 +60,13 @@ struct BrowserShellView: View {
     @State private var isFullScreen: Bool = false
     @State private var hostWindow: NSWindow?
 
+    // Layout
+    @AppStorage(BrowserLayout.defaultsKey) private var layoutRaw: String = BrowserLayout.sidebar.rawValue
+    @AppStorage("luna_sidebar_visible") private var sidebarVisible: Bool = true
+    @AppStorage("luna_sidebar_width") private var sidebarWidth: Double = 240
+    /// Sidebar temporarily shown over the content while it's hidden (hover at the left edge).
+    @State private var sidebarPeeking: Bool = false
+
     private let router = CommandRouter()
     private let gemini = GeminiClient(apiKeyProvider: { KeychainManager.shared.fetchGeminiKey() })
     private let ollama = OllamaClient()
@@ -101,8 +108,13 @@ struct BrowserShellView: View {
         let shouldShowTabStrip = tabManager.tabCount() > 1 || !isStartPage
         
         return ZStack {
-            Color(nsColor: .windowBackgroundColor)
-                .ignoresSafeArea()
+            if usesSidebar {
+                VisualEffectView(material: .sidebar, blendingMode: .behindWindow, state: .followsWindowActiveState)
+                    .ignoresSafeArea()
+            } else {
+                Color(nsColor: .windowBackgroundColor)
+                    .ignoresSafeArea()
+            }
 
             // Configures the window titlebar to be tall enough to hold tabs.
             // This is the key: it sets window.titlebarHeight so the traffic-light
@@ -111,321 +123,33 @@ struct BrowserShellView: View {
 
             GeometryReader { geometry in
                 HStack(spacing: 0) {
-                    // Left: main browser content
+                    if sidebarShown {
+                        sidebar
+                            .frame(width: sidebarWidth)
+                            .overlay(alignment: .trailing) { SidebarResizeHandle(width: $sidebarWidth) }
+                            .transition(.move(edge: .leading).combined(with: .opacity))
+                    }
+
+                    // Main browser content
                     VStack(spacing: 0) {
-
-                    // ─── Tab strip (toolbar stays dark; active tab uses chromeColor) ───
-                    // Hide tab strip on start page when there's only one tab
-                    if shouldShowTabStrip {
-                        TabStripView(
-                            tabManager: tabManager,
-                            faviconURLByTab: web.faviconURLByTab,
-                            primaryTintByTab: web.primaryTintByTab,
-                            contentAreaColor: chromeColor,
-                            chromeTextIsLight: chromeTextIsLight,
-                            profileInactiveTabColor: profileInactiveTabColor,
-                            onSwitch: { switchToTab($0) },
-                            onClose: { closeTab($0) },
-                            onNewTab: newTab,
-                            onDropURLForNewTab: { newTabWithURL($0) },
-                            onReorder: { tabManager.moveTab(from: $0, to: $1) }
-                        )
-                        .frame(height: tabStripHeight)
-                        .padding(.leading, isFullScreen ? 8 : 78)
-                        .padding(.trailing, 8)
-                        .padding(.top, isFullScreen ? 0 : -(tabStripHeight - 6))
-                        .background(
-                            ZStack {
-                                Color(white: 0.12)
-                                profileToolbarTint
-                            }
-                        )
-                        .animation(.easeInOut(duration: 0.25), value: sessionStore.activeProfileId)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                        .animation(.easeInOut(duration: 0.2), value: isFullScreen)
-                    }
-
-                    // ─── Address bar row (hidden on start page and AI chat; single centered bar is the search there) ───
-                    if let cid = tabManager.currentTab,
-                       let u = tabManager.tabURL[cid] ?? nil,
-                       u.absoluteString != "about:blank",
-                       !(u.scheme == "luma" && u.host == "ai") {
-                        HStack(spacing: 6) {
-                            // Profile switcher bubble (left of nav buttons)
-                            ProfileSwitcherView(
-                                profileManager: profileManager,
-                                activeProfileId: sessionStore.activeProfileId,
-                                onSwitch: { profile in switchToProfile(profile) },
-                                onOpenInNewWindow: { profile in openProfileInNewWindow(profile) }
-                            )
-                            .padding(.leading, 4)
-
-                            // Nav buttons (Safari-style: quiet, circular hover highlight)
-                            HStack(spacing: 2) {
-                                ChromeIconButton(
-                                    systemName: "chevron.left",
-                                    tint: chromeText,
-                                    isEnabled: web.canGoBackForActiveTab,
-                                    accessibilityLabel: "Back"
-                                ) { if let id = tabManager.currentTab { web.goBack(in: id) } }
-
-                                ChromeIconButton(
-                                    systemName: "chevron.right",
-                                    tint: chromeText,
-                                    isEnabled: web.canGoForwardForActiveTab,
-                                    accessibilityLabel: "Forward"
-                                ) { if let id = tabManager.currentTab { web.goForward(in: id) } }
-
-                                ChromeIconButton(
-                                    systemName: "arrow.clockwise",
-                                    tint: chromeText,
-                                    accessibilityLabel: "Reload"
-                                ) { if let id = tabManager.currentTab { web.reload(in: id) } }
-                            }
-
-                            // Omnibox (unified look: subtle overlay on chrome)
-                            HStack(spacing: 8) {
-                                Image(systemName: "globe")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(chromeTextMuted)
-
-                                TextField("Search or enter website name", text: $addressBarText)
-                                    .textFieldStyle(.plain)
-                                    .foregroundColor(chromeText)
-                                    .focused($addressBarFocused)
-                                    .onSubmit {
-                                        applyAddressBarSubmit()
-                                    }
-                                    .onChange(of: addressBarText) { _, newValue in
-                                        fetchHistorySuggestions(for: newValue)
-                                        fetchSearchSuggestions(for: newValue)
-                                    }
-                                    .onChange(of: addressBarFocused) { _, focused in
-                                        if !focused {
-                                            searchSuggestions = []
-                                            historySuggestions = []
-                                            addressBarKeyState.visible = false
-                                        }
-                                    }
-                                    .onTapGesture {
-                                        selectAllAddressBarText()
-                                    }
-
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(chromeTextMuted)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 7)
-                            .frame(maxWidth: .infinity)
-                            .background(Capsule(style: .continuous).fill(chromeText.opacity(0.10)))
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .strokeBorder(
-                                        addressBarFocused ? Color.accentColor.opacity(0.7) : chromeText.opacity(0.08),
-                                        lineWidth: addressBarFocused ? 1.5 : 1
-                                    )
-                            )
-                            .animation(.easeInOut(duration: 0.12), value: addressBarFocused)
-                            .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
-                                handleURLDrop(providers: providers) { url in
-                                    addressBarText = url.absoluteString
-                                    navigateToURL(url)
-                                }
-                            }
-
-                            // Chat pill (sparkles: matches the system assistant iconography)
-                            Button(action: toggleAIPanel) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "sparkles")
-                                        .font(.system(size: 11, weight: .medium))
-                                    Text("Chat")
-                                        .font(.system(size: 12, weight: .medium))
-                                }
-                                .foregroundColor(chromeText)
-                                .padding(.horizontal, 11)
-                                .padding(.vertical, 6)
-                                .background(Capsule(style: .continuous).fill(chromeText.opacity(0.12)))
-                                .overlay(Capsule(style: .continuous).strokeBorder(chromeText.opacity(0.08), lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Toggle AI panel")
-
-                            // Downloads hub (heartbeat on new download + count badge)
-                            Button(action: { showDownloadsHub = true }) {
-                                ZStack(alignment: .topTrailing) {
-                                    Image(systemName: "arrow.down.circle")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundColor(chromeText.opacity(0.9))
-                                        .frame(width: 28, height: 28)
-                                        .contentShape(Rectangle())
-                                        .scaleEffect(downloadIconScale)
-                                    if !downloadManager.recentDownloads.isEmpty {
-                                        Text(downloadManager.recentDownloads.count > 99 ? "99+" : "\(downloadManager.recentDownloads.count)")
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 5)
-                                            .padding(.vertical, 2)
-                                            .background(Capsule().fill(Color.accentColor))
-                                            .offset(x: 6, y: -6)
-                                    }
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Downloads")
-                            .onChange(of: downloadManager.recentDownloads.count) { oldCount, newCount in
-                                if newCount > oldCount { runDownloadsHeartbeat() }
-                            }
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .frame(height: addressBarHeight)
-                        .frame(maxWidth: .infinity)
-                        .background(
-                            ZStack {
-                                chromeColor
-                                profileToolbarTint
-                            }
-                        )
-                        .animation(.easeInOut(duration: 0.25), value: sessionStore.activeProfileId)
-                        .animation(.easeInOut(duration: 0.06), value: chromeColor)
-                    }
-
-                    // ─── Web content or start page ───────────────────────────
-                    if let currentId = tabManager.currentTab {
-                        let currentURL = tabManager.tabURL[currentId] ?? nil
-                        let isStartPage = (currentURL == nil || currentURL?.absoluteString == "about:blank")
-                        let isAIChat = currentURL?.scheme == "luma" && currentURL?.host == "ai"
-                        
-                        if isStartPage || isAIChat {
-                            SmartSearchView(
-                                gemini: gemini,
-                                ollama: ollama,
-                                tabManager: tabManager,
-                                webViewWrapper: web,
-                                tabId: currentId,
-                                messages: aiChatMessagesBinding(for: currentId),
-                                onNavigate: { url in navigateToURL(url) }
-                            )
-                            .id(currentId)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if currentURL?.scheme == "luma", currentURL?.host == "history" {
-                            // History page (always in its own tab)
-                            // Special luma://history page
-                            HistoryPageView(historyManager: historyManager, onSelectURL: { url in
-                                navigateToURL(url)
-                            })
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        if usesSidebar {
+                            contentArea
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .shadow(color: .black.opacity(0.18), radius: 1.5, y: 0.5)
+                                .padding(.vertical, 8)
+                                .padding(.trailing, 8)
+                                .padding(.leading, sidebarShown ? 0 : 8)
                         } else {
-                            ZStack(alignment: .top) {
-                                WebViewContainer(webView: web.ensureWebView(for: currentId))
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .id(currentId)
-                                if isFirstLoad {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                        .onAppear {
-                                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                                                isFirstLoad = false
-                                            }
-                                        }
-                                }
-                                if web.googleSuspiciousErrorDetected, currentURL?.host?.contains("aistudio.google.com") == true {
-                                    GoogleSuspiciousErrorBanner(
-                                        onDismiss: { web.clearGoogleSuspiciousErrorBanner() },
-                                        onLearnMore: { showGoogleAPIKeyHelpSheet = true }
-                                    )
-                                    .padding(.horizontal, 12)
-                                    .padding(.top, 12)
-                                    .transition(.move(edge: .top).combined(with: .opacity))
-                                }
-                                if showBrowserFindBar {
-                                    BrowserFindBar(
-                                        query: $browserFindQuery,
-                                        onFind: { query in
-                                            if let id = tabManager.currentTab {
-                                                web.findInPage(query: query, in: id)
-                                            }
-                                        },
-                                        onNext: {
-                                            if let id = tabManager.currentTab {
-                                                web.findNext(in: id)
-                                            }
-                                        },
-                                        onPrevious: {
-                                            if let id = tabManager.currentTab {
-                                                web.findPrevious(in: id)
-                                            }
-                                        },
-                                        onDismiss: {
-                                            showBrowserFindBar = false
-                                            browserFindQuery = ""
-                                            if let id = tabManager.currentTab {
-                                                web.clearFind(in: id)
-                                            }
-                                        }
-                                    )
-                                    .transition(.move(edge: .top).combined(with: .opacity))
-                                }
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
-                                handleURLDrop(providers: providers, action: { navigateToURL($0) })
-                            }
-                            .sheet(isPresented: $showGoogleAPIKeyHelpSheet) {
-                                GoogleAPIKeyHelpView()
-                            }
+                            topTabsChrome(shouldShowTabStrip: shouldShowTabStrip)
+                            contentArea
                         }
-                    } else {
-                        Color(nsColor: .windowBackgroundColor)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .overlay(Text("No tab").foregroundColor(.secondary))
                     }
-                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .animation(.easeInOut(duration: 0.08), value: tabManager.currentTab)
                 .animation(.easeInOut(duration: 0.06), value: shouldShowTabStrip)
                 .animation(.easeInOut(duration: 0.06), value: tabManager.tabCount())
                 .overlay(alignment: .topLeading) {
-                    // Address bar suggestions: history (URL/title) first, then search; show when any suggestion exists
-                    let hasSuggestions = !historySuggestions.isEmpty || !searchSuggestions.isEmpty
-                    if tabManager.currentTab.flatMap({ tabManager.tabURL[$0] ?? nil }) != nil,
-                       (tabManager.currentTab.flatMap { tabManager.tabURL[$0] ?? nil }?.absoluteString ?? "") != "about:blank",
-                       addressBarFocused,
-                       !addressBarText.trimmingCharacters(in: .whitespaces).isEmpty,
-                       hasSuggestions {
-                        AddressBarSuggestionsList(
-                            historyItems: historySuggestions,
-                            searchPhrases: Array(searchSuggestions.prefix(5)),
-                            selectedIndex: addressBarKeyState.selectedIndex,
-                            onSelectHistory: { url in
-                                searchSuggestions = []
-                                historySuggestions = []
-                                addressBarKeyState.visible = false
-                                navigateToURL(url)
-                            },
-                            onSelectSearch: { phrase in
-                                addressBarText = phrase
-                                searchSuggestions = []
-                                historySuggestions = []
-                                addressBarKeyState.visible = false
-                                navigateFromAddressBar()
-                            }
-                        )
-                        .background(Color(nsColor: .windowBackgroundColor))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .shadow(color: .black.opacity(0.15), radius: 8)
-                        .padding(.top, addressBarHeight + chromePadding + 6)
-                        .padding(.leading, chromePadding + 6 + 84 + 8)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .onAppear {
-                            addressBarKeyState.visible = true
-                            addressBarKeyState.totalCount = historySuggestions.count + searchSuggestions.count
-                            addressBarKeyState.selectedIndex = 0
-                        }
-                        .onDisappear { addressBarKeyState.visible = false }
-                    }
+                    if !usesSidebar { suggestionsOverlay }
                 }
 
                     // ─── AI side panel (hidden on start page and AI chat) ────────
@@ -475,8 +199,16 @@ struct BrowserShellView: View {
                 }
             }
         }
+        .ignoresSafeArea(.container, edges: usesSidebar ? .top : [])
         .overlay(alignment: .topLeading) {
-            if isStartPage || (currentURL?.scheme == "luma" && currentURL?.host == "ai") {
+            if usesSidebar { suggestionsOverlay }
+        }
+        .overlay(alignment: .leading) {
+            if usesSidebar && !sidebarVisible { sidebarPeekOverlay }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.9), value: sidebarVisible)
+        .overlay(alignment: .topLeading) {
+            if !usesSidebar, isStartPage || (currentURL?.scheme == "luma" && currentURL?.host == "ai") {
                 ProfileSwitcherView(
                     profileManager: profileManager,
                     activeProfileId: sessionStore.activeProfileId,
@@ -525,6 +257,10 @@ struct BrowserShellView: View {
                         DispatchQueue.main.async { toggleAIPanel() }
                         return nil
                     }
+                    if key == "s", usesSidebar, !event.modifierFlags.contains(.shift) {
+                        DispatchQueue.main.async { toggleSidebar() }
+                        return nil
+                    }
                     if key == "t" {
                         DispatchQueue.main.async { newTab() }
                         return nil
@@ -538,7 +274,10 @@ struct BrowserShellView: View {
                         return nil
                     }
                     if key == "l" {
-                        DispatchQueue.main.async { addressBarFocused = true }
+                        DispatchQueue.main.async {
+                            if usesSidebar && !sidebarVisible { sidebarPeeking = true }
+                            addressBarFocused = true
+                        }
                         return nil
                     }
                     // Cmd+R: reload current tab
@@ -699,6 +438,385 @@ struct BrowserShellView: View {
                 eventMonitor = nil
             }
         }
+    }
+
+    // MARK: - Layout pieces
+
+    private var usesSidebar: Bool { BrowserLayout(rawValue: layoutRaw) != .topTabs }
+    private var sidebarShown: Bool { usesSidebar && sidebarVisible }
+
+    private var sidebar: some View {
+        SidebarView(
+            store: session.workspace,
+            web: web,
+            addressText: $addressBarText,
+            addressFocused: $addressBarFocused,
+            isFullScreen: isFullScreen,
+            actions: SidebarActions(
+                activate: { switchToTab($0) },
+                close: { closeTab($0) },
+                newTab: { newTab() },
+                store: session.workspace
+            ),
+            onSubmitAddress: { applyAddressBarSubmit() },
+            onToggleSidebar: toggleSidebar,
+            onShowDownloads: { showDownloadsHub = true },
+            profileControl: AnyView(ProfileSwitcherView(
+                profileManager: profileManager,
+                activeProfileId: sessionStore.activeProfileId,
+                onSwitch: switchToProfile,
+                onOpenInNewWindow: openProfileInNewWindow
+            ))
+        )
+    }
+
+    /// Hidden sidebar: a thin hot zone at the left edge reveals it over the content.
+    @ViewBuilder
+    private var sidebarPeekOverlay: some View {
+        if sidebarPeeking {
+            sidebar
+                .frame(width: sidebarWidth)
+                .frame(maxHeight: .infinity)
+                .background(VisualEffectView(material: .sidebar, blendingMode: .withinWindow, state: .active))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .shadow(color: .black.opacity(0.25), radius: 12, x: 2)
+                .padding(.vertical, 6)
+                .padding(.leading, 6)
+                .onHover { inside in
+                    if !inside && !addressBarFocused { sidebarPeeking = false }
+                }
+                .transition(.move(edge: .leading).combined(with: .opacity))
+        } else {
+            Color.clear
+                .frame(width: 8)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .onHover { if $0 { sidebarPeeking = true } }
+        }
+    }
+
+    private func toggleSidebar() {
+        sidebarPeeking = false
+        sidebarVisible.toggle()
+    }
+
+    @ViewBuilder
+    private func topTabsChrome(shouldShowTabStrip: Bool) -> some View {
+            // ─── Tab strip (toolbar stays dark; active tab uses chromeColor) ───
+            // Hide tab strip on start page when there's only one tab
+            if shouldShowTabStrip {
+                TabStripView(
+                    tabManager: tabManager,
+                    faviconURLByTab: web.faviconURLByTab,
+                    primaryTintByTab: web.primaryTintByTab,
+                    contentAreaColor: chromeColor,
+                    chromeTextIsLight: chromeTextIsLight,
+                    profileInactiveTabColor: profileInactiveTabColor,
+                    onSwitch: { switchToTab($0) },
+                    onClose: { closeTab($0) },
+                    onNewTab: newTab,
+                    onDropURLForNewTab: { newTabWithURL($0) },
+                    onReorder: { tabManager.moveTab(from: $0, to: $1) }
+                )
+                .frame(height: tabStripHeight)
+                .padding(.leading, isFullScreen ? 8 : 78)
+                .padding(.trailing, 8)
+                .padding(.top, isFullScreen ? 0 : -(tabStripHeight - 6))
+                .background(
+                    ZStack {
+                        Color(white: 0.12)
+                        profileToolbarTint
+                    }
+                )
+                .animation(.easeInOut(duration: 0.25), value: sessionStore.activeProfileId)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .animation(.easeInOut(duration: 0.2), value: isFullScreen)
+            }
+
+            // ─── Address bar row (hidden on start page and AI chat; single centered bar is the search there) ───
+            if let cid = tabManager.currentTab,
+               let u = tabManager.tabURL[cid] ?? nil,
+               u.absoluteString != "about:blank",
+               !(u.scheme == "luma" && u.host == "ai") {
+                HStack(spacing: 6) {
+                    // Profile switcher bubble (left of nav buttons)
+                    ProfileSwitcherView(
+                        profileManager: profileManager,
+                        activeProfileId: sessionStore.activeProfileId,
+                        onSwitch: { profile in switchToProfile(profile) },
+                        onOpenInNewWindow: { profile in openProfileInNewWindow(profile) }
+                    )
+                    .padding(.leading, 4)
+
+                    // Nav buttons (Safari-style: quiet, circular hover highlight)
+                    HStack(spacing: 2) {
+                        ChromeIconButton(
+                            systemName: "chevron.left",
+                            tint: chromeText,
+                            isEnabled: web.canGoBackForActiveTab,
+                            accessibilityLabel: "Back"
+                        ) { if let id = tabManager.currentTab { web.goBack(in: id) } }
+
+                        ChromeIconButton(
+                            systemName: "chevron.right",
+                            tint: chromeText,
+                            isEnabled: web.canGoForwardForActiveTab,
+                            accessibilityLabel: "Forward"
+                        ) { if let id = tabManager.currentTab { web.goForward(in: id) } }
+
+                        ChromeIconButton(
+                            systemName: "arrow.clockwise",
+                            tint: chromeText,
+                            accessibilityLabel: "Reload"
+                        ) { if let id = tabManager.currentTab { web.reload(in: id) } }
+                    }
+
+                    // Omnibox (unified look: subtle overlay on chrome)
+                    HStack(spacing: 8) {
+                        Image(systemName: "globe")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(chromeTextMuted)
+
+                        TextField("Search or enter website name", text: $addressBarText)
+                            .textFieldStyle(.plain)
+                            .foregroundColor(chromeText)
+                            .focused($addressBarFocused)
+                            .onSubmit {
+                                applyAddressBarSubmit()
+                            }
+                            .onChange(of: addressBarText) { _, newValue in
+                                fetchHistorySuggestions(for: newValue)
+                                fetchSearchSuggestions(for: newValue)
+                            }
+                            .onChange(of: addressBarFocused) { _, focused in
+                                if !focused {
+                                    searchSuggestions = []
+                                    historySuggestions = []
+                                    addressBarKeyState.visible = false
+                                }
+                            }
+                            .onTapGesture {
+                                selectAllAddressBarText()
+                            }
+
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(chromeTextMuted)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                    .frame(maxWidth: .infinity)
+                    .background(Capsule(style: .continuous).fill(chromeText.opacity(0.10)))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(
+                                addressBarFocused ? Color.accentColor.opacity(0.7) : chromeText.opacity(0.08),
+                                lineWidth: addressBarFocused ? 1.5 : 1
+                            )
+                    )
+                    .animation(.easeInOut(duration: 0.12), value: addressBarFocused)
+                    .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
+                        handleURLDrop(providers: providers) { url in
+                            addressBarText = url.absoluteString
+                            navigateToURL(url)
+                        }
+                    }
+
+                    // Chat pill (sparkles: matches the system assistant iconography)
+                    Button(action: toggleAIPanel) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 11, weight: .medium))
+                            Text("Chat")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(chromeText)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 6)
+                        .background(Capsule(style: .continuous).fill(chromeText.opacity(0.12)))
+                        .overlay(Capsule(style: .continuous).strokeBorder(chromeText.opacity(0.08), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Toggle AI panel")
+
+                    // Downloads hub (heartbeat on new download + count badge)
+                    Button(action: { showDownloadsHub = true }) {
+                        ZStack(alignment: .topTrailing) {
+                            Image(systemName: "arrow.down.circle")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(chromeText.opacity(0.9))
+                                .frame(width: 28, height: 28)
+                                .contentShape(Rectangle())
+                                .scaleEffect(downloadIconScale)
+                            if !downloadManager.recentDownloads.isEmpty {
+                                Text(downloadManager.recentDownloads.count > 99 ? "99+" : "\(downloadManager.recentDownloads.count)")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Capsule().fill(Color.accentColor))
+                                    .offset(x: 6, y: -6)
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Downloads")
+                    .onChange(of: downloadManager.recentDownloads.count) { oldCount, newCount in
+                        if newCount > oldCount { runDownloadsHeartbeat() }
+                    }
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .frame(height: addressBarHeight)
+                .frame(maxWidth: .infinity)
+                .background(
+                    ZStack {
+                        chromeColor
+                        profileToolbarTint
+                    }
+                )
+                .animation(.easeInOut(duration: 0.25), value: sessionStore.activeProfileId)
+                .animation(.easeInOut(duration: 0.06), value: chromeColor)
+            }
+    }
+
+    @ViewBuilder
+    private var contentArea: some View {
+            // ─── Web content or start page ───────────────────────────
+            if let currentId = tabManager.currentTab {
+                let currentURL = tabManager.tabURL[currentId] ?? nil
+                let isStartPage = (currentURL == nil || currentURL?.absoluteString == "about:blank")
+                let isAIChat = currentURL?.scheme == "luma" && currentURL?.host == "ai"
+                
+                if isStartPage || isAIChat {
+                    SmartSearchView(
+                        gemini: gemini,
+                        ollama: ollama,
+                        tabManager: tabManager,
+                        webViewWrapper: web,
+                        tabId: currentId,
+                        messages: aiChatMessagesBinding(for: currentId),
+                        onNavigate: { url in navigateToURL(url) }
+                    )
+                    .id(currentId)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if currentURL?.scheme == "luma", currentURL?.host == "history" {
+                    // History page (always in its own tab)
+                    // Special luma://history page
+                    HistoryPageView(historyManager: historyManager, onSelectURL: { url in
+                        navigateToURL(url)
+                    })
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ZStack(alignment: .top) {
+                        WebViewContainer(webView: web.ensureWebView(for: currentId))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .id(currentId)
+                        if isFirstLoad {
+                            ProgressView()
+                                .scaleEffect(0.8)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .onAppear {
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                                        isFirstLoad = false
+                                    }
+                                }
+                        }
+                        if web.googleSuspiciousErrorDetected, currentURL?.host?.contains("aistudio.google.com") == true {
+                            GoogleSuspiciousErrorBanner(
+                                onDismiss: { web.clearGoogleSuspiciousErrorBanner() },
+                                onLearnMore: { showGoogleAPIKeyHelpSheet = true }
+                            )
+                            .padding(.horizontal, 12)
+                            .padding(.top, 12)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                        if showBrowserFindBar {
+                            BrowserFindBar(
+                                query: $browserFindQuery,
+                                onFind: { query in
+                                    if let id = tabManager.currentTab {
+                                        web.findInPage(query: query, in: id)
+                                    }
+                                },
+                                onNext: {
+                                    if let id = tabManager.currentTab {
+                                        web.findNext(in: id)
+                                    }
+                                },
+                                onPrevious: {
+                                    if let id = tabManager.currentTab {
+                                        web.findPrevious(in: id)
+                                    }
+                                },
+                                onDismiss: {
+                                    showBrowserFindBar = false
+                                    browserFindQuery = ""
+                                    if let id = tabManager.currentTab {
+                                        web.clearFind(in: id)
+                                    }
+                                }
+                            )
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onDrop(of: [.url, .fileURL, .plainText], isTargeted: nil) { providers in
+                        handleURLDrop(providers: providers, action: { navigateToURL($0) })
+                    }
+                    .sheet(isPresented: $showGoogleAPIKeyHelpSheet) {
+                        GoogleAPIKeyHelpView()
+                    }
+                }
+            } else {
+                Color(nsColor: .windowBackgroundColor)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(Text("No tab").foregroundColor(.secondary))
+            }
+    }
+
+    @ViewBuilder
+    private var suggestionsOverlay: some View {
+            // Address bar suggestions: history (URL/title) first, then search; show when any suggestion exists
+            let hasSuggestions = !historySuggestions.isEmpty || !searchSuggestions.isEmpty
+            // Top tabs hide the address bar on the start page; the sidebar URL field is always there.
+            if usesSidebar || (tabManager.currentTab.flatMap({ tabManager.tabURL[$0] ?? nil }) != nil &&
+               (tabManager.currentTab.flatMap { tabManager.tabURL[$0] ?? nil }?.absoluteString ?? "") != "about:blank"),
+               addressBarFocused,
+               !addressBarText.trimmingCharacters(in: .whitespaces).isEmpty,
+               hasSuggestions {
+                AddressBarSuggestionsList(
+                    historyItems: historySuggestions,
+                    searchPhrases: Array(searchSuggestions.prefix(5)),
+                    selectedIndex: addressBarKeyState.selectedIndex,
+                    onSelectHistory: { url in
+                        searchSuggestions = []
+                        historySuggestions = []
+                        addressBarKeyState.visible = false
+                        navigateToURL(url)
+                    },
+                    onSelectSearch: { phrase in
+                        addressBarText = phrase
+                        searchSuggestions = []
+                        historySuggestions = []
+                        addressBarKeyState.visible = false
+                        navigateFromAddressBar()
+                    }
+                )
+                .background(Color(nsColor: .windowBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .shadow(color: .black.opacity(0.15), radius: 8)
+                .frame(maxWidth: usesSidebar ? 460 : nil)
+                .padding(.top, usesSidebar ? SidebarView.topRowHeight + 30 + 6 : addressBarHeight + chromePadding + 6)
+                .padding(.leading, usesSidebar ? 8 : chromePadding + 6 + 84 + 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .onAppear {
+                    addressBarKeyState.visible = true
+                    addressBarKeyState.totalCount = historySuggestions.count + searchSuggestions.count
+                    addressBarKeyState.selectedIndex = 0
+                }
+                .onDisappear { addressBarKeyState.visible = false }
+            }
     }
 
     // MARK: - Profile switching
@@ -1004,7 +1122,8 @@ struct BrowserShellView: View {
         web.setActiveTab(id)
         web.load(url: URL(string: "about:blank")!, in: id)
         addressBarText = ""
-        addressBarFocused = true
+        // The start page has its own input; in sidebar mode don't steal focus for the URL field.
+        addressBarFocused = !usesSidebar
     }
 
     private func closeCurrentTab() {

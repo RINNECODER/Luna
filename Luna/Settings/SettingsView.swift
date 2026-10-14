@@ -22,6 +22,7 @@ private struct GeneralSettingsView: View {
     @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSizeRaw: Int = 13
     @AppStorage("luma_appearance") private var appearance: String = "system"
     @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
+    @AppStorage(BrowserLayout.defaultsKey) private var layoutRaw: String = BrowserLayout.sidebar.rawValue
 
     var body: some View {
         ScrollView {
@@ -29,6 +30,24 @@ private struct GeneralSettingsView: View {
                 Text("General")
                     .font(.largeTitle)
                     .padding(.bottom)
+
+                // Layout (Sidebar / Top Tabs)
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Layout")
+                        .font(.headline)
+                    Picker("", selection: $layoutRaw) {
+                        ForEach(BrowserLayout.allCases) { layout in
+                            Text(layout.title).tag(layout.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text("Sidebar shows tabs, folders and spaces vertically. ⌘S hides it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(Color.gray.opacity(0.1))
+                .cornerRadius(8)
 
                 // AI Panel Text Size (6–32 pt slider)
                 VStack(alignment: .leading, spacing: 12) {

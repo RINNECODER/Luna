@@ -10,6 +10,9 @@ import SwiftUI
 struct LunaApp: App {
     init() {
         NSWindow.allowsAutomaticWindowTabbing = false
+        #if DEBUG
+        DebugSnapshot.scheduleIfRequested()
+        #endif
     }
 
     var body: some Scene {
