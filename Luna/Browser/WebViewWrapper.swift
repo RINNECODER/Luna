@@ -67,6 +67,26 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         let rect: CGRect
     }
     @Published var linkPreview: LinkPreviewRequest?
+
+    // MARK: Luna Passwords
+
+    /// Saved logins available for the login form on a tab's page.
+    struct PasswordFillOffer: Equatable {
+        let tabId: UUID
+        let host: String
+        let credentials: [PasswordVault.Credential]
+    }
+    /// A login just submitted that isn't saved yet.
+    struct PasswordSaveOffer: Equatable {
+        let tabId: UUID
+        let host: String
+        var username: String
+        let password: String
+    }
+    @Published var passwordFillOffer: PasswordFillOffer?
+    @Published var passwordSaveOffer: PasswordSaveOffer?
+    /// Usernames typed on a host this session, for two-step sign-ins.
+    private var lastUsernameByHost: [String: String] = [:]
     
     /// TabManager reference for updating titles
     weak var tabManager: TabManager?
@@ -125,6 +145,125 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         } else {
             primaryTintByTab.removeValue(forKey: tabId)
         }
+    }
+
+    private lazy var passwordHandler: PasswordMessageHandler = {
+        let h = PasswordMessageHandler()
+        h.wrapper = self
+        return h
+    }()
+
+    static let passwordScriptSource = """
+        (function(){
+            var handler = window.webkit && window.webkit.messageHandlers.lunaPasswords;
+            if (!handler) return;
+            function visible(el) {
+                var r = el.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
+            }
+            function passwordFields() {
+                return Array.prototype.filter.call(document.querySelectorAll('input[type=password]'), visible);
+            }
+            function usernameFieldFor(pw) {
+                var scope = (pw && pw.form) || document;
+                var inputs = Array.prototype.filter.call(scope.querySelectorAll('input'), function(i) {
+                    return visible(i) && /^(text|email|tel|)$/i.test(i.type);
+                });
+                if (!pw) return inputs[0] || null;
+                var before = inputs.filter(function(i) { return i.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING; });
+                return before.length ? before[before.length - 1] : (inputs[0] || null);
+            }
+            function host() { return location.host.replace(/^www\\./, '').toLowerCase(); }
+            var reported = false;
+            function scan() {
+                if (reported) return;
+                var userOnly = document.querySelector('input[autocomplete~=username], input[autocomplete~=email]');
+                if (passwordFields().length || (userOnly && visible(userOnly))) {
+                    reported = true;
+                    handler.postMessage({type: 'form', host: host()});
+                }
+            }
+            var timer = null;
+            new MutationObserver(function() { clearTimeout(timer); timer = setTimeout(scan, 400); })
+                .observe(document.documentElement, {childList: true, subtree: true});
+            scan();
+            function capture(pw) {
+                if (!pw || !pw.value) return;
+                var u = usernameFieldFor(pw);
+                handler.postMessage({type: 'submit', host: host(), username: u ? u.value : '', password: pw.value});
+            }
+            function rememberUsername() {
+                var u = document.querySelector('input[autocomplete~=username], input[autocomplete~=email], input[type=email]');
+                if (u && u.value) handler.postMessage({type: 'username', host: host(), username: u.value});
+            }
+            document.addEventListener('submit', function(e) {
+                var pw = e.target.querySelector ? e.target.querySelector('input[type=password]') : null;
+                if (pw) capture(pw); else rememberUsername();
+            }, true);
+            document.addEventListener('keydown', function(e) {
+                if (e.key !== 'Enter' || !e.target) return;
+                if (e.target.type === 'password') capture(e.target); else rememberUsername();
+            }, true);
+            document.addEventListener('click', function(e) {
+                var b = e.target.closest ? e.target.closest('button, input[type=submit], [role=button]') : null;
+                if (!b) return;
+                var filled = passwordFields().filter(function(p) { return p.value; });
+                if (filled.length) capture(filled[0]); else rememberUsername();
+            }, true);
+            window.__lunaFill = function(user, pass, expectedHost) {
+                if (host() !== expectedHost) return false;
+                var pw = passwordFields()[0] || null;
+                var u = pw ? usernameFieldFor(pw)
+                           : document.querySelector('input[autocomplete~=username], input[autocomplete~=email], input[type=email]');
+                var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+                function set(el, v) {
+                    if (!el) return;
+                    setter.call(el, v);
+                    el.dispatchEvent(new Event('input', {bubbles: true}));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                }
+                if (u && user) set(u, user);
+                if (pw) set(pw, pass);
+                return !!(pw || u);
+            };
+        })();
+        """
+
+    fileprivate func handlePasswordMessage(_ body: Any, from webView: WKWebView?) {
+        guard let webView, let tabId = tabId(for: webView), let dict = body as? [String: Any],
+              let host = dict["host"] as? String, !host.isEmpty,
+              // Only trust the page's own top-level host.
+              PasswordVault.normalize(webView.url?.host ?? "") == host else { return }
+        let vault = PasswordVault.shared
+        switch dict["type"] as? String {
+        case "form":
+            let saved = vault.credentials(profile: profileId, host: host)
+            if !saved.isEmpty { passwordFillOffer = PasswordFillOffer(tabId: tabId, host: host, credentials: saved) }
+        case "username":
+            if let user = dict["username"] as? String, !user.isEmpty { lastUsernameByHost[host] = user }
+        case "submit":
+            guard let password = dict["password"] as? String, !password.isEmpty, !vault.isNeverSave(host) else { return }
+            var username = dict["username"] as? String ?? ""
+            if username.isEmpty { username = lastUsernameByHost[host] ?? "" } else { lastUsernameByHost[host] = username }
+            guard !vault.isSaved(host: host, username: username, password: password, profile: profileId) else { return }
+            let offer = PasswordSaveOffer(tabId: tabId, host: host, username: username, password: password)
+            if passwordSaveOffer != offer { passwordSaveOffer = offer }
+        default:
+            break
+        }
+    }
+
+    /// Unlocks the vault and fills the login form on the tab's current page.
+    @discardableResult
+    func fillPassword(_ credential: PasswordVault.Credential, in tabId: UUID) async -> Bool {
+        guard let webView = webViews[tabId], PasswordVault.normalize(webView.url?.host ?? "") == credential.host,
+              await PasswordVault.shared.unlock(reason: "fill your password for \(credential.host)"),
+              let password = try? PasswordVault.shared.password(for: credential, profile: profileId) else { return false }
+        let result = try? await webView.callAsyncJavaScript(
+            "return window.__lunaFill ? window.__lunaFill(user, pass, host) : false;",
+            arguments: ["user": credential.username, "pass": password, "host": credential.host],
+            in: nil, contentWorld: .defaultClient)
+        return (result as? Bool) == true
     }
 
     private lazy var linkPreviewHandler: LinkPreviewMessageHandler = {
@@ -384,6 +523,11 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         config.userContentController.addUserScript(themeScript)
         let googleErrorScript = WKUserScript(source: WebViewWrapper.googleSuspiciousErrorScriptSource, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
         config.userContentController.addUserScript(googleErrorScript)
+        // Passwords: form detection and filling live in an isolated content world, so page
+        // scripts can neither read saved passwords nor fake a submit.
+        config.userContentController.add(passwordHandler, contentWorld: .defaultClient, name: "lunaPasswords")
+        config.userContentController.addUserScript(WKUserScript(source: WebViewWrapper.passwordScriptSource, injectionTime: .atDocumentEnd,
+                                                                forMainFrameOnly: true, in: .defaultClient))
         // Link previews run in an isolated content world: page scripts can't see or spoof this channel.
         config.userContentController.add(linkPreviewHandler, contentWorld: .defaultClient, name: "lunaLinkPreview")
         config.userContentController.addUserScript(WKUserScript(source: WebViewWrapper.linkPreviewScriptSource, injectionTime: .atDocumentEnd,
@@ -914,6 +1058,11 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         download.delegate = self
     }
 
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        guard let tabId = tabId(for: webView), passwordFillOffer?.tabId == tabId else { return }
+        passwordFillOffer = nil
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         guard let tabId = webViews.first(where: { $0.value === webView })?.key else { return }
         if let url = webView.url {
@@ -1146,6 +1295,19 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         print("WebViewWrapper: Popup closed via window.close(), removing tab \(tabId)")
         tabManager?.closeTab(tabId)
         removeWebView(for: tabId)
+    }
+}
+
+// MARK: - Password message handler (isolated content world)
+
+private final class PasswordMessageHandler: NSObject, WKScriptMessageHandler {
+    weak var wrapper: WebViewWrapper?
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.frameInfo.isMainFrame else { return }
+        let body = message.body
+        let webView = message.webView
+        DispatchQueue.main.async { [weak self] in self?.wrapper?.handlePasswordMessage(body, from: webView) }
     }
 }
 

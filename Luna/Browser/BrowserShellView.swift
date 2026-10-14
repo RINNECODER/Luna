@@ -686,6 +686,41 @@ struct BrowserShellView: View {
                             }
                             .id(preview.url)
                         }
+                        // Luna Passwords: fill / save offers for this tab.
+                        VStack(alignment: .trailing, spacing: 8) {
+                            if let offer = web.passwordSaveOffer, offer.tabId == currentId {
+                                PasswordSaveCard(
+                                    offer: offer,
+                                    onSave: { username in
+                                        try? PasswordVault.shared.save(host: offer.host, username: username,
+                                                                       password: offer.password, profile: sessionStore.activeProfileId)
+                                        web.passwordSaveOffer = nil
+                                    },
+                                    onNever: {
+                                        PasswordVault.shared.setNeverSave(offer.host, true)
+                                        web.passwordSaveOffer = nil
+                                    },
+                                    onDismiss: { web.passwordSaveOffer = nil }
+                                )
+                                .id(offer.host + offer.username)
+                            } else if let offer = web.passwordFillOffer, offer.tabId == currentId {
+                                PasswordFillCard(
+                                    offer: offer,
+                                    onFill: { cred in
+                                        Task {
+                                            if await web.fillPassword(cred, in: currentId) { web.passwordFillOffer = nil }
+                                        }
+                                    },
+                                    onDismiss: { web.passwordFillOffer = nil }
+                                )
+                            }
+                        }
+                        .padding(.top, 12)
+                        .padding(.trailing, 12)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: web.passwordFillOffer)
+                        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: web.passwordSaveOffer)
                         if askOnPageVisible {
                             AskOnPageBar(tabId: currentId, web: web, onClose: { askOnPageVisible = false })
                                 .padding(.top, 12)
