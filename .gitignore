@@ -27,3 +27,6 @@ package-lock.json
 Signing.xcconfig
 
 build/
+
+# Coverage output
+*.profraw
