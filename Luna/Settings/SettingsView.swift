@@ -3,96 +3,244 @@ import Foundation
 import SwiftUI
 import AppKit
 
+/// Settings window: category sidebar, search, and grouped forms (macOS
+/// System Settings style, mirroring Helium's categories).
 struct SettingsView: View {
-    var body: some View {
-        TabView {
-            GeneralSettingsView()
-                .tabItem { Label("General", systemImage: "gear") }
-            ModelsSettingsView()
-                .tabItem { Label("AI & Models", systemImage: "cpu") }
-            ProfileSettingsView()
-                .tabItem { Label("Profiles", systemImage: "person.2.fill") }
+    @State private var selection: SettingsPane?
+    @State private var query = ""
+
+    init(initialPane: SettingsPane = .appearance) {
+        _selection = State(initialValue: initialPane)
+    }
+
+    private var visiblePanes: [SettingsPane] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return SettingsPane.allCases }
+        return SettingsPane.allCases.filter { pane in
+            pane.title.lowercased().contains(q) || pane.keywords.contains { $0.contains(q) }
         }
-        .frame(width: 520, height: 560)
+    }
+
+    var body: some View {
+        NavigationSplitView {
+            List(visiblePanes, selection: $selection) { pane in
+                Label(pane.title, systemImage: pane.icon)
+                    .tag(pane)
+            }
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 240)
+            .searchable(text: $query, placement: .sidebar, prompt: "Search settings")
+            .onChange(of: query) { _, _ in
+                if let selection, !visiblePanes.contains(selection) { self.selection = visiblePanes.first }
+            }
+        } detail: {
+            Group {
+                switch selection ?? .appearance {
+                case .profiles: ProfileSettingsView()
+                case .appearance: AppearanceSettingsView()
+                case .tabs: TabsSettingsView()
+                case .ai: ModelsSettingsView()
+                case .search: SearchSettingsView()
+                case .about: AboutSettingsView()
+                }
+            }
+            .navigationTitle((selection ?? .appearance).title)
+        }
+        .frame(minWidth: 760, idealWidth: 820, minHeight: 520, idealHeight: 600)
     }
 }
 
-/// General appearance/text settings.
-private struct GeneralSettingsView: View {
-    @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSizeRaw: Int = 13
+enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
+    case profiles, appearance, tabs, ai, search, about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .profiles: return "Profiles"
+        case .appearance: return "Appearance"
+        case .tabs: return "Tabs"
+        case .ai: return "AI & Models"
+        case .search: return "Search"
+        case .about: return "About Luna"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .profiles: return "person.crop.circle"
+        case .appearance: return "paintbrush"
+        case .tabs: return "square.on.square"
+        case .ai: return "sparkles"
+        case .search: return "magnifyingglass"
+        case .about: return "info.circle"
+        }
+    }
+
+    /// Words that find this pane from the search field.
+    var keywords: [String] {
+        switch self {
+        case .profiles: return ["profile", "account", "color", "window"]
+        case .appearance: return ["theme", "dark", "light", "layout", "sidebar", "compact", "dynamic", "classic",
+                                  "address", "url", "frameless", "frame", "home", "font", "text size"]
+        case .tabs: return ["memory", "unload", "sleep", "hibernate", "inactive"]
+        case .ai: return ["model", "gemini", "ollama", "openai", "chatgpt", "anthropic", "claude", "api key"]
+        case .search: return ["suggestions", "search engine", "privacy"]
+        case .about: return ["version", "license"]
+        }
+    }
+}
+
+// MARK: - Appearance
+
+private struct AppearanceSettingsView: View {
     @AppStorage("luma_appearance") private var appearance: String = "system"
-    @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
     @AppStorage(BrowserLayout.defaultsKey) private var layoutRaw: String = BrowserLayout.sidebar.rawValue
+    @AppStorage(ChromePrefs.centeredAddressBar) private var centeredAddressBar = false
+    @AppStorage(ChromePrefs.minimalURL) private var minimalURL = true
+    @AppStorage(ChromePrefs.addressBarProgress) private var addressBarProgress = true
+    @AppStorage(ChromePrefs.frameless) private var frameless = false
+    @AppStorage(ChromePrefs.alwaysShowTopBar) private var alwaysShowTopBar = false
+    @AppStorage(ChromePrefs.roundedFrame) private var roundedFrame = true
+    @AppStorage(ChromePrefs.showHomeButton) private var showHomeButton = false
+    @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSize: Int = 13
+
+    private var layout: Binding<BrowserLayout> {
+        Binding(get: { BrowserLayout(stored: layoutRaw) }, set: { layoutRaw = $0.rawValue })
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("General")
-                    .font(.largeTitle)
-                    .padding(.bottom)
-
-                // Layout (Sidebar / Top Tabs)
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Layout")
-                        .font(.headline)
-                    Picker("", selection: $layoutRaw) {
-                        ForEach(BrowserLayout.allCases) { layout in
-                            Text(layout.title).tag(layout.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    Text("Sidebar shows tabs, folders and spaces vertically. ⌘S hides it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        Form {
+            Section {
+                Picker("Theme", selection: $appearance) {
+                    Text("System").tag("system")
+                    Text("Light").tag("light")
+                    Text("Dark").tag("dark")
                 }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-
-                // AI Panel Text Size (6–32 pt slider)
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("AI Panel Text Size")
-                            .font(.headline)
-                        Spacer()
-                        Text("\(aiPanelFontSizeRaw) pt")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    Slider(value: Binding(
-                        get: { Double(aiPanelFontSizeRaw) },
-                        set: { aiPanelFontSizeRaw = Int($0.rounded()) }
-                    ), in: 6...32, step: 1)
-                }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-
-                Toggle("Send typing to search suggestions", isOn: $searchSuggestionsEnabled)
-                    .toggleStyle(.switch)
-                    .padding()
-                    .background(Color.gray.opacity(0.1))
-                    .cornerRadius(8)
-
-                // Appearance (Light / Dark / System)
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Appearance")
-                        .font(.headline)
-                    Picker("", selection: $appearance) {
-                        Text("Light").tag("light")
-                        Text("Dark").tag("dark")
-                        Text("System").tag("system")
-                    }
-                    .pickerStyle(.segmented)
-                }
-                .padding()
-                .background(Color.gray.opacity(0.1))
-                .cornerRadius(8)
-
-                Spacer()
             }
-            .padding()
+
+            Section {
+                Picker("Browser layout", selection: layout) {
+                    ForEach(BrowserLayout.allCases) { Text($0.title).tag($0) }
+                }
+                Text(layout.wrappedValue.summary)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if layout.wrappedValue == .dynamic || layout.wrappedValue == .classic {
+                    Toggle("Centered address bar", isOn: $centeredAddressBar)
+                }
+                Toggle("Minimal URL in the address bar", isOn: $minimalURL)
+                Toggle("Show loading progress in the address bar", isOn: $addressBarProgress)
+            }
+
+            Section {
+                if layout.wrappedValue == .sidebar {
+                    Toggle(isOn: $frameless) {
+                        Text("Auto-hide sidebar")
+                        Text("Hover the left edge of the window to show it.")
+                    }
+                } else {
+                    Toggle(isOn: $frameless) {
+                        Text("Frameless mode")
+                        Text("Hide the browser UI until you hover the window edge.")
+                    }
+                    Toggle("Always show the top bar", isOn: $alwaysShowTopBar)
+                        .disabled(!frameless)
+                }
+                Toggle("Show a rounded frame around web contents", isOn: $roundedFrame)
+                if layout.wrappedValue != .sidebar {
+                    Toggle("Show home button", isOn: $showHomeButton)
+                }
+            }
+
+            Section("AI panel") {
+                LabeledContent("Text size") {
+                    HStack {
+                        Slider(value: Binding(get: { Double(aiPanelFontSize) },
+                                              set: { aiPanelFontSize = Int($0.rounded()) }),
+                               in: 10...24, step: 1)
+                            .frame(width: 200)
+                        Text("\(aiPanelFontSize) pt")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                }
+            }
         }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Tabs
+
+private struct TabsSettingsView: View {
+    @AppStorage(TabHibernator.timeoutDefaultsKey) private var hibernateMinutes: Int = TabHibernator.defaultTimeoutMinutes
+
+    var body: some View {
+        Form {
+            Section {
+                Picker(selection: $hibernateMinutes) {
+                    Text("Never").tag(0)
+                    Text("After 15 minutes").tag(15)
+                    Text("After 30 minutes").tag(30)
+                    Text("After 1 hour").tag(60)
+                    Text("After 2 hours").tag(120)
+                } label: {
+                    Text("Unload inactive tabs")
+                    Text("Frees memory. Tabs playing media or using the camera or microphone stay loaded.")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Search
+
+private struct SearchSettingsView: View {
+    @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isOn: $searchSuggestionsEnabled) {
+                    Text("Search suggestions")
+                    Text("Sends what you type in the address bar to the search engine to suggest queries.")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - About
+
+private struct AboutSettingsView: View {
+    private var version: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = info?["CFBundleVersion"] as? String ?? "1"
+        return "Version \(short) (\(build))"
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(spacing: 14) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 56, height: 56)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Luna").font(.title2.weight(.semibold))
+                        Text(version).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+                LabeledContent("License", value: "MIT")
+                Link("Source code on GitHub", destination: URL(string: "https://github.com/Rahul4301/Luna")!)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
