@@ -15,6 +15,7 @@ struct PanelMessageRow: View {
     var onStopRun: (() -> Void)?
     var onResumeGrab: ((GrabCard) -> Void)?
     var onDismissGrab: (() -> Void)?
+    var onPersonalize: ((CustomizationCardView.Action) -> Void)?
     var isLastMessage = false
 
     var body: some View {
@@ -25,6 +26,8 @@ struct PanelMessageRow: View {
             case .grab(let grab):
                 GrabCardView(card: grab, fontSize: fontSize, isCurrent: isLastMessage, onStop: onStopRun,
                              onResume: { onResumeGrab?(grab) }, onDismiss: onDismissGrab)
+            case .personalize(let card):
+                CustomizationCardView(card: card, fontSize: fontSize) { onPersonalize?($0) }
             }
         } else {
             LunaChatBubble(message: message, isUser: message.role == .user, fontSize: fontSize,
@@ -335,6 +338,8 @@ struct PanelApprovalCard: View {
     let detail: String
     var state: State = .pending
     var fontSize: CGFloat = 13
+    /// A change preview: Apply / Cancel instead of Allow / Allow for Session / Deny.
+    var isPreview = false
     let onDecide: (Decision) -> Void
     @SwiftUI.State private var showDetail = false
 
@@ -361,7 +366,7 @@ struct PanelApprovalCard: View {
                 Text(showDetail && !detail.isEmpty ? detail : summary)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(ChatTokens.textPrimary)
-                    .lineLimit(showDetail ? 40 : 3)
+                    .lineLimit(showDetail || isPreview ? 40 : 3)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
@@ -370,11 +375,18 @@ struct PanelApprovalCard: View {
             switch state {
             case .pending:
                 HStack(spacing: 6) {
-                    Button("Allow") { onDecide(.allow) }
-                        .buttonStyle(.borderedProminent)
-                    Button("Allow for Session") { onDecide(.allowForSession) }
-                    Spacer(minLength: 0)
-                    Button("Deny", role: .destructive) { onDecide(.deny) }
+                    if isPreview {
+                        Button("Apply") { onDecide(.allow) }
+                            .buttonStyle(.borderedProminent)
+                        Button("Cancel") { onDecide(.deny) }
+                        Spacer(minLength: 0)
+                    } else {
+                        Button("Allow") { onDecide(.allow) }
+                            .buttonStyle(.borderedProminent)
+                        Button("Allow for Session") { onDecide(.allowForSession) }
+                        Spacer(minLength: 0)
+                        Button("Deny", role: .destructive) { onDecide(.deny) }
+                    }
                 }
                 .controlSize(.small)
             case .decided(let label):
@@ -397,8 +409,9 @@ struct MCPApprovalStack: View {
         if !center.pending.isEmpty {
             VStack(spacing: 6) {
                 ForEach(center.pending) { request in
-                    PanelApprovalCard(systemImage: "person.badge.key", title: request.title,
-                                      summary: request.detail, detail: "") { decision in
+                    PanelApprovalCard(systemImage: request.isPreview ? "slider.horizontal.3" : "person.badge.key",
+                                      title: request.title, summary: request.detail, detail: "",
+                                      isPreview: request.isPreview) { decision in
                         switch decision {
                         case .allow: center.resolve(request.id, .once)
                         case .allowForSession: center.resolve(request.id, .session)

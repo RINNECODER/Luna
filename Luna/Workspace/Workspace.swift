@@ -488,6 +488,23 @@ nonisolated struct Workspace: Codable, Equatable {
         return group.id
     }
 
+    /// Puts a split back as it was (same id, axis and ratios) at `loc`, pulling its panes out
+    /// of wherever they are now. Panes that are gone are skipped.
+    mutating func restoreSplit(_ group: SplitGroup, at loc: NodeLocation) {
+        let panes = group.panes.filter { tabs[$0] != nil && !isFavorite($0) }
+        guard panes.count >= 2 else { return }
+        for id in panes {
+            _ = detachTabFromAnySplit(id)
+            _ = detachNode(id)
+        }
+        var restored = group
+        if panes != group.panes {
+            restored.panes = panes
+            restored.ratios = SplitGroup.evenRatios(panes.count)
+        }
+        insertNode(.split(restored), at: loc)
+    }
+
     /// Adds a tab to an existing split as a new pane (at `index`, default last).
     /// Returns false when the split is full, missing, or the tab can't be split.
     @discardableResult

@@ -9,7 +9,10 @@ struct LLMRequest {
     var systemPrompt: String = LLMRequest.defaultSystemPrompt
 
     static var defaultSystemPrompt: String {
-        "You are Luna, an intelligent browser assistant. Be concise and accurate. Use Markdown when it improves clarity. \(LLMClock.contextLine())"
+        "You are Luna, an intelligent browser assistant. Be concise and accurate. Use Markdown when it improves clarity. " +
+            "If the user wants to change how Luna looks or works (toolbar, bookmarks bar, layout, theme, tabs), point them to Personalize " +
+            "in the composer's mode menu; Luna is customized only through its settings, never by writing code or building it. " +
+            "\(LLMClock.contextLine())"
     }
 
     /// The final user message: the prompt plus any page/document context.

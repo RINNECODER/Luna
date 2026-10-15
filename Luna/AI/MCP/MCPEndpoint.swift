@@ -88,6 +88,8 @@ enum MCPGate {
 
 /// MCP over streamable HTTP (JSON responses, no SSE stream) for the Luna toolbox.
 /// Sessions are assigned at `initialize` (`Mcp-Session-Id`) and carry per-client approvals.
+/// Only mutating tools need approval: read tools (snapshot, tabs_list, settings_list…) run for
+/// anyone holding the bearer token, so the token is the credential that guards page contents.
 final class MCPEndpoint {
     static let supportedVersions = ["2025-11-25", "2025-06-18", "2025-03-26"]
     static let latestVersion = "2025-11-25"
@@ -218,7 +220,7 @@ final class MCPEndpoint {
             "protocolVersion": .string(version),
             "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
             "serverInfo": .object(["name": "luna", "title": "Luna browser", "version": .string(appVersion)]),
-            "instructions": "Drive the user's Luna browser tabs. Call snapshot to get element ids, then click/type/select by id; ids expire when the page changes. Mutating tools may wait for the user to approve in Luna.",
+            "instructions": "Drive the user's Luna browser tabs. Call snapshot to get element ids, then click/type/select by id; ids expire when the page changes. Mutating tools may wait for the user to approve in Luna. To customize Luna for the user (settings, toolbar, bookmarks bar, tab organization) read usage_summary/settings_list and use settings_set and the tab tools: they are the only way to change Luna. Never write code, edit Luna's files or run builds to customize it.",
         ])
         return .json(Self.result(id: id, result), headers: ["Mcp-Session-Id": session.id])
     }
@@ -234,24 +236,29 @@ final class MCPEndpoint {
         guard case .object(let arguments) = rawArguments else {
             return Self.error(id: id, code: -32602, "arguments must be an object")
         }
-        if tool.mutates, !isTrusted(), !devTrusted, session?.allowAll != true {
+        // Resolve the target window once, so the action lands where the approval preview said.
+        let host = toolbox.currentHost()
+        // Customization tools always show their preview; other mutating tools ask unless trusted.
+        if tool.mutates, tool.confirmsEveryCall || (!isTrusted() && !devTrusted && session?.allowAll != true) {
             // Don't ask the user about a call that would be rejected anyway.
             do { try tool.validate(arguments) } catch {
                 return Self.result(id: id, Self.toolResult(LunaToolResult(text: error.localizedDescription, isError: true)))
             }
-            let detail = AgentRedaction.redact(Self.summary(arguments))
-            let decision = await approver?.approve(client: session?.clientName ?? "An agent", tool: name, detail: detail) ?? .deny
+            let detail = toolbox.preview(name, arguments: arguments, host: host) ?? AgentRedaction.redact(Self.summary(arguments))
+            let decision = await approver?.approve(client: Self.displayClient(session?.clientName), tool: name, detail: detail) ?? .deny
             switch decision {
             case .deny:
                 return Self.result(id: id, Self.toolResult(LunaToolResult(text: "The user declined this action in Luna.", isError: true)))
             case .session:
-                session?.allowAll = true
+                if !tool.confirmsEveryCall { session?.allowAll = true }
             case .once:
                 break
             }
         }
         do {
-            return Self.result(id: id, Self.toolResult(try await toolbox.call(name, arguments: arguments)))
+            return Self.result(id: id, Self.toolResult(try await toolbox.call(name, arguments: arguments,
+                                                                              source: session?.clientName ?? "An agent",
+                                                                              host: host)))
         } catch {
             return Self.error(id: id, code: -32602, error.localizedDescription)
         }
@@ -283,6 +290,15 @@ final class MCPEndpoint {
 
     static func toolResult(_ r: LunaToolResult) -> JSONValue {
         .object(["content": .array([.object(["type": "text", "text": .string(r.text)])]), "isError": .bool(r.isError)])
+    }
+
+    /// The client name is self-reported in `initialize`, so the approval prompt says so and quotes
+    /// it (control characters stripped, length capped) to keep it from reading as Luna's own text.
+    static func displayClient(_ name: String?) -> String {
+        let clean = String(String.UnicodeScalarView((name ?? "").unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }))
+            .trimmingCharacters(in: .whitespaces)
+        if clean.isEmpty { return "An unnamed agent (self-reported)" }
+        return "\"\(clean.prefix(40))\" (self-reported)"
     }
 
     /// Short one-line argument summary for the approval prompt.

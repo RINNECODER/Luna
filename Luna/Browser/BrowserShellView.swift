@@ -92,6 +92,8 @@ struct BrowserShellView: View {
     @AppStorage(ChromePrefs.alwaysShowTopBar) private var alwaysShowTopBar = false
     @AppStorage(ChromePrefs.roundedFrame) private var roundedFrame = true
     @AppStorage(ChromePrefs.hideWindowButtons) private var hideWindowButtons = true
+    @AppStorage(ChromePrefs.showToolbar) private var showToolbar = false
+    @AppStorage(ChromePrefs.showBookmarksBar) private var showBookmarksBar = false
     /// Top bar temporarily shown in frameless mode (hover at the top edge, or ⌘L).
     @State private var topBarPeeking = false
     /// Window buttons shown because the pointer is at the top edge (sidebar hidden).
@@ -116,9 +118,12 @@ struct BrowserShellView: View {
                     // Main browser content; the sliding sidebar sits over this padding when docked.
                     VStack(spacing: 0) {
                         if showsTopChrome {
-                            topChrome(showsTabs: !frameless)
+                            topChrome(showsTabs: !frameless && !usesSidebar)
                         } else if addressBarPeeks {
                             peekingTopBar
+                        }
+                        if showBookmarksBar {
+                            bookmarksBar
                         }
                         framedContent
                     }
@@ -277,6 +282,7 @@ struct BrowserShellView: View {
                 guard let host = hostWindow, event.window === host else { return event }
                 let key = event.charactersIgnoringModifiers ?? ""
                 if event.modifierFlags.contains(.command) {
+                    Self.recordShortcut(key, event.modifierFlags)
                     if key == "e" {
                         DispatchQueue.main.async { toggleAIPanel() }
                         return nil
@@ -508,6 +514,24 @@ struct BrowserShellView: View {
         }
     }
 
+    // MARK: - Usage (opt-in)
+
+    /// Counts Luna's own ⌘ shortcuts (not page shortcuts) while personalization is on.
+    private static func recordShortcut(_ key: String, _ flags: NSEvent.ModifierFlags) {
+        let known: Set<String> = ["e", "s", "t", "w", "y", "l", "r", "p", "f", "d", "=", "+", "-", "0",
+                                  "1", "2", "3", "4", "5", "6", "7", "8", "9", "[", "]"]
+        let k = key.lowercased()
+        guard known.contains(k) else { return }
+        Usage.recordShortcut((flags.contains(.shift) ? "⇧⌘" : "⌘") + k.uppercased())
+        switch k {
+        case "r": Usage.record(.reload)
+        case "p": Usage.record(.print)
+        case "=", "+", "-", "0": Usage.record(.zoom)
+        case "f": Usage.record(.find)
+        default: break
+        }
+    }
+
     // MARK: - Layout pieces
 
     private var layout: BrowserLayout { BrowserLayout(stored: layoutRaw) }
@@ -515,11 +539,12 @@ struct BrowserShellView: View {
     /// Frameless mode in the sidebar layout means the sidebar auto-hides.
     /// The docked sidebar steps aside while the top bar is down.
     private var sidebarShown: Bool { usesSidebar && sidebarVisible && !frameless && !topBarPeeking }
-    private var showsTopChrome: Bool { !usesSidebar && (!frameless || alwaysShowTopBar) }
+    /// The sidebar layout shows a toolbar row only when the user turns it on (Settings → Appearance).
+    private var showsTopChrome: Bool { usesSidebar ? showToolbar : (!frameless || alwaysShowTopBar) }
     private var topBarAutoHides: Bool { !usesSidebar && frameless && !alwaysShowTopBar }
     /// Helium-style address bar that slides in from the top edge (hover or ⌘L):
-    /// the frameless top layouts, and the sidebar layout, which has no URL field of its own.
-    private var addressBarPeeks: Bool { topBarAutoHides || usesSidebar }
+    /// the frameless top layouts, and the sidebar layout without its toolbar.
+    private var addressBarPeeks: Bool { topBarAutoHides || (usesSidebar && !showToolbar) }
     /// The left-edge tab list: a hidden sidebar, or the tab list in frameless top layouts.
     /// Window buttons disappear with the chrome they sit on (frameless, hidden sidebar)
     /// and come back while it's revealed.
@@ -553,16 +578,38 @@ struct BrowserShellView: View {
             close: { closeTab($0) },
             newTab: { newTab() },
             split: { dropped, target in
-                if session.workspace.splitTab(dropped, onto: target) != nil { switchToTab(dropped) }
+                if session.workspace.splitTab(dropped, onto: target) != nil { Usage.record(.splitView); switchToTab(dropped) }
             },
             tearOff: { tearOff($0, at: $1) },
             submitAddress: { applyAddressBarSubmit() },
             goHome: { goHome() },
             toggleAI: { toggleAIPanel() },
-            showDownloads: { DownloadManager.shared.presentHub() },
+            showDownloads: { Usage.record(.downloads); DownloadManager.shared.presentHub() },
             showHistory: { navigateToHistory() },
-            askOnPage: { openAskOnPage() }
+            askOnPage: { openAskOnPage() },
+            bookmarkPage: { bookmarkCurrentPage() }
         )
+    }
+
+    private var bookmarks: BookmarkStore { BookmarkStore.forProfile(session.profileId) }
+
+    private var bookmarksBar: some View {
+        BookmarksBar(store: bookmarks, onOpen: { url, newTab in
+            Usage.record(.bookmarkOpen)
+            if newTab { newTabWithURL(url) } else { navigateToURL(url) }
+        }, onAddCurrentPage: isCurrentTabStartOrAIChat ? nil : { bookmarkCurrentPage() })
+        // At the window's top edge (no toolbar, no docked sidebar) it clears the window buttons.
+        .padding(.leading, !showsTopChrome && !topBarPeeking && !sidebarShown && !isFullScreen ? 70 : 0)
+        .padding(.top, !showsTopChrome && !topBarPeeking ? 4 : 0)
+    }
+
+    /// Adds the current page to the bookmarks bar, turning the bar on so it shows.
+    private func bookmarkCurrentPage() {
+        guard let id = tabManager.currentTab, let tab = session.workspace.tab(id), let url = tab.url,
+              isSafeBrowserURL(url) else { return }
+        bookmarks.add(url: url, title: tab.customTitle ?? tab.title)
+        Usage.record(.bookmarkAdd)
+        if !showBookmarksBar { showBookmarksBar = true }
     }
 
     private func topChrome(showsTabs: Bool) -> some View {
@@ -573,7 +620,8 @@ struct BrowserShellView: View {
             web: web,
             addressText: $addressBarText,
             addressFocused: $addressBarFocused,
-            isFullScreen: isFullScreen,
+            // A docked sidebar holds the window buttons, so the toolbar needs no inset for them.
+            isFullScreen: isFullScreen || sidebarShown,
             showsTabs: showsTabs,
             profileControl: AnyView(profileControl),
             extensions: session.extensions,
@@ -588,7 +636,7 @@ struct BrowserShellView: View {
             contentArea
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .shadow(color: .black.opacity(0.18), radius: 1.5, y: 0.5)
-                .padding(.top, showsTopChrome || topBarPeeking ? 0 : 8)
+                .padding(.top, showsTopChrome || topBarPeeking || showBookmarksBar ? 0 : 8)
                 .padding(.bottom, 8)
                 .padding(.trailing, 8)
                 .padding(.leading, sidebarShown ? 0 : 8)
@@ -644,6 +692,7 @@ struct BrowserShellView: View {
 
     private func openAskOnPage() {
         guard !isCurrentTabStartOrAIChat else { return }
+        Usage.record(.askOnPage)
         if showBrowserFindBar {
             showBrowserFindBar = false
             browserFindQuery = ""
@@ -720,6 +769,7 @@ struct BrowserShellView: View {
     }
 
     private func toggleSidebar() {
+        Usage.record(.toggleSidebar)
         sidebarPeeking = false
         sidebarVisible.toggle()
     }
@@ -1161,12 +1211,12 @@ struct BrowserShellView: View {
         if !trimmed.contains(" "), trimmed.contains(".") {
             return URL(string: "https://" + trimmed)
         }
-        let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmed
-        return URL(string: "https://www.google.com/search?q=" + encoded)
+        return SearchEngine.current.searchURL(for: trimmed)
     }
 
     /// Submit address bar: if first history suggestion matches typed prefix, go there; else resolve as URL or search.
     private func applyAddressBarSubmit() {
+        Usage.record(.addressBar)
         let trimmed = addressBarText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if !trimmed.isEmpty,
            let first = historySuggestions.first,
@@ -1212,6 +1262,7 @@ struct BrowserShellView: View {
     }
     
     private func navigateToHistory() {
+        Usage.record(.history)
         // Always open History in a new tab
         if let url = URL(string: "luma://history") {
             let id = tabManager.newTab(url: url)
@@ -1356,6 +1407,7 @@ struct BrowserShellView: View {
     private func toggleAIPanel() {
         guard let id = tabManager.currentTab else { return }
         guard !isCurrentTabStartOrAIChat else { return }
+        Usage.record(.aiPanel)
         let key = panelKey(for: id)
         if tabsWithPanelOpen.contains(key) {
             tabsWithPanelOpen.remove(key)
@@ -1366,6 +1418,8 @@ struct BrowserShellView: View {
     }
 
     private func newTab() {
+        Usage.record(.newTab)
+        Usage.noteOpenTabs(session.workspace.orderedTabIds.count + 1)
         let id = tabManager.newTab(url: nil)
         _ = web.ensureWebView(for: id)
         web.setActiveTab(id)
@@ -1404,6 +1458,7 @@ struct BrowserShellView: View {
     }
 
     private func closeTab(_ id: UUID) {
+        Usage.record(.closeTab)
         web.removeWebView(for: id)
         tabsWithPanelOpen.remove(id)
         session.chatStore.removeMessages(for: id)
@@ -1417,6 +1472,7 @@ struct BrowserShellView: View {
     }
 
     private func switchToTab(_ id: UUID) {
+        if id != tabManager.currentTab { Usage.record(.switchTab) }
         tabManager.switchToTab(id)
         web.setActiveTab(id)
         syncAddressBarFromCurrentTab()

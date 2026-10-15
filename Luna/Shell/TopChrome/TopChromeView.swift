@@ -15,6 +15,7 @@ struct TopChromeActions {
     var showDownloads: () -> Void
     var showHistory: () -> Void
     var askOnPage: () -> Void = {}
+    var bookmarkPage: () -> Void = {}
 }
 
 /// Window chrome for the Compact, Dynamic and Classic layouts.
@@ -168,6 +169,7 @@ struct MoreMenu: View {
         Menu {
             Button("New Tab", action: actions.newTab)
             Button("Ask on Page", action: actions.askOnPage)
+            Button("Bookmark This Page", action: actions.bookmarkPage)
             Divider()
             Button("History", action: actions.showHistory)
             Button("Downloads", action: actions.showDownloads)

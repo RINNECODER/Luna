@@ -83,6 +83,7 @@ final class ProfileSession: ObservableObject {
             webViewWrapper?.interactionStates() ?? [:]
         }
         self.workspace.onTabPinned = { [weak self] id in
+            Usage.record(.pinTab)
             if LunaMaxPrefs.isOn(LunaMaxPrefs.tidyTitles) { self?.tidyTitle(id, reportErrors: false) }
         }
 
@@ -160,6 +161,7 @@ final class ProfileSession: ObservableObject {
 
     /// Groups the active space's loose Today tabs into folders.
     func tidyToday() {
+        Usage.record(.tidyToday)
         let space = workspace.activeSpace
         let tabs: [LunaMax.TabSummary] = space.today.compactMap { node in
             guard case .tab(let id) = node, let tab = workspace.tab(id) else { return nil }

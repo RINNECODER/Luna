@@ -200,6 +200,11 @@ final class WorkspaceStore: ObservableObject {
 
     // MARK: - Structure
 
+    /// Several structural edits as one undoable step (AI customization tools and their undo).
+    func update(_ actionName: String, _ change: (inout Workspace) -> Void) {
+        perform(actionName, change)
+    }
+
     func move(_ nodeId: UUID, to location: NodeLocation) {
         perform("Move") { _ = $0.moveNode(nodeId, to: location) }
     }

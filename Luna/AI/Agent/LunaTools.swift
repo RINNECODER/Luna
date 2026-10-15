@@ -7,7 +7,7 @@ import WebKit
 enum LunaTools {
     static let all: [LunaTool] = [
         tabsList, tabOpen, tabSelect, navigate, snapshot, click, type, select, scroll, read, runTask, grabApiKey,
-    ]
+    ] + PersonalizationTools.all
 
     static let tabsList = LunaTool(
         name: "tabs_list", description: "List open Luna tabs: id, title, URL, and which is active.",

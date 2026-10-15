@@ -73,6 +73,7 @@ enum BrowserWindows {
                      at screenPoint: CGPoint? = nil, size: CGSize = CGSize(width: 1200, height: 800)) -> NSWindow {
         let record = Record(id: windowId, profileId: profileId)
         register(record)
+        if transfer != nil { Usage.record(.newWindow) }
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

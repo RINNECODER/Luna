@@ -41,6 +41,7 @@ struct SettingsView: View {
                 case .tabs: TabsSettingsView()
                 case .ai: ModelsSettingsView()
                 case .lunaMax: LunaMaxSettingsView()
+                case .personalization: PersonalizationSettingsView()
                 case .passwords: PasswordsSettingsView()
                 case .extensions: ExtensionsSettingsView()
                 case .search: SearchSettingsView()
@@ -59,7 +60,7 @@ struct SettingsView: View {
 }
 
 enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
-    case profiles, appearance, tabs, passwords, extensions, ai, lunaMax, search, about
+    case profiles, appearance, tabs, passwords, extensions, ai, lunaMax, personalization, search, about
 
     var id: String { rawValue }
 
@@ -70,6 +71,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .tabs: return "Tabs"
         case .ai: return "AI & Models"
         case .lunaMax: return "Luna Max"
+        case .personalization: return "Personalization"
         case .passwords: return "Passwords"
         case .extensions: return "Extensions"
         case .search: return "Search"
@@ -84,6 +86,7 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         case .tabs: return "square.on.square"
         case .ai: return "sparkles"
         case .lunaMax: return "wand.and.stars"
+        case .personalization: return "slider.horizontal.3"
         case .passwords: return "key.fill"
         case .extensions: return "puzzlepiece.extension"
         case .search: return "magnifyingglass"
@@ -96,12 +99,13 @@ enum SettingsPane: String, CaseIterable, Identifiable, Hashable {
         switch self {
         case .profiles: return ["profile", "account", "color", "window"]
         case .appearance: return ["theme", "dark", "light", "layout", "sidebar", "compact", "dynamic", "classic",
-                                  "address", "url", "frameless", "frame", "home", "font", "text size"]
+                                  "address", "url", "frameless", "frame", "home", "font", "text size", "toolbar", "bookmarks"]
         case .tabs: return ["memory", "unload", "sleep", "hibernate", "inactive"]
         case .ai: return ["model", "gemini", "ollama", "openai", "chatgpt", "anthropic", "claude", "api key"]
         case .extensions: return ["extension", "add-on", "plugin", "chrome web store", "ublock", "adblock"]
         case .passwords: return ["password", "login", "keychain", "autofill", "import", "touch id"]
         case .lunaMax: return ["ask on page", "preview", "tidy", "rename", "downloads", "arc max", "folders"]
+        case .personalization: return ["usage", "data", "privacy", "record", "agent", "customize", "undo", "changes"]
         case .search: return ["suggestions", "search engine", "privacy"]
         case .about: return ["version", "license"]
         }
@@ -121,6 +125,8 @@ private struct AppearanceSettingsView: View {
     @AppStorage(ChromePrefs.roundedFrame) private var roundedFrame = true
     @AppStorage(ChromePrefs.showHomeButton) private var showHomeButton = false
     @AppStorage(ChromePrefs.hideWindowButtons) private var hideWindowButtons = true
+    @AppStorage(ChromePrefs.showToolbar) private var showToolbar = false
+    @AppStorage(ChromePrefs.showBookmarksBar) private var showBookmarksBar = false
     @AppStorage("luma_ai_panel_font_size") private var aiPanelFontSize: Int = 13
     @AppStorage(StartPagePrefs.showShortcuts) private var showShortcuts = true
     @ObservedObject private var shortcutStore = ShortcutStore.shared
@@ -173,8 +179,18 @@ private struct AppearanceSettingsView: View {
                     Text("The close, minimize and full-screen buttons disappear while the bar or sidebar is hidden.")
                 }
                 Toggle("Show a rounded frame around web contents", isOn: $roundedFrame)
-                if layout.wrappedValue != .sidebar {
+                if layout.wrappedValue == .sidebar {
+                    Toggle(isOn: $showToolbar) {
+                        Text("Show toolbar")
+                        Text("Back, forward, reload and the address field above the page.")
+                    }
+                }
+                if layout.wrappedValue != .sidebar || showToolbar {
                     Toggle("Show home button", isOn: $showHomeButton)
+                }
+                Toggle(isOn: $showBookmarksBar) {
+                    Text("Show bookmarks bar")
+                    Text("Add pages with ⋯ → Bookmark This Page.")
                 }
             }
 
@@ -283,10 +299,14 @@ private struct LunaMaxSettingsView: View {
 
 private struct SearchSettingsView: View {
     @AppStorage("luma_search_suggestions_enabled") private var searchSuggestionsEnabled: Bool = false
+    @AppStorage(SearchEngine.defaultsKey) private var engine = SearchEngine.google.rawValue
 
     var body: some View {
         Form {
             Section {
+                Picker("Search engine", selection: $engine) {
+                    ForEach(SearchEngine.allCases) { Text($0.title).tag($0.rawValue) }
+                }
                 Toggle(isOn: $searchSuggestionsEnabled) {
                     Text("Search suggestions")
                     Text("Sends what you type in the address bar to the search engine to suggest queries.")
