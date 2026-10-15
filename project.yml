@@ -13,6 +13,11 @@ packages:
   LaTeXSwiftUI:
     url: https://github.com/colinc86/LaTeXSwiftUI
     from: "1.5.0"
+  # Dev mode's raw terminal. 1.10.1: the last release without a build-tool plugin
+  # (later ones need -skipPackagePluginValidation / a trust prompt to build).
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: "1.10.1"
 
 configFiles:
   Debug: Signing.xcconfig
@@ -86,6 +91,7 @@ targetTemplates:
     dependencies:
       - package: MarkdownUI
       - package: LaTeXSwiftUI
+      - package: SwiftTerm
     configFiles:
       Debug: Signing.xcconfig
       Release: Signing.xcconfig
