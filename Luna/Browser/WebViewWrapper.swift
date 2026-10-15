@@ -561,7 +561,7 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         config.userContentController.add(linkPreviewHandler, contentWorld: .defaultClient, name: "lunaLinkPreview")
         config.userContentController.addUserScript(WKUserScript(source: WebViewWrapper.linkPreviewScriptSource, injectionTime: .atDocumentEnd,
                                                                 forMainFrameOnly: true, in: .defaultClient))
-        let wv = WKWebView(frame: .zero, configuration: config)
+        let wv = LunaWebView(frame: .zero, configuration: config)
         // Use Safari UA for all requests to avoid bot detection on Akamai-protected sites.
         wv.customUserAgent = WebViewWrapper.safariUserAgent
         register(webView: wv, for: tabId)
@@ -574,6 +574,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         wv.uiDelegate = self
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsMagnification = true
+        (wv as? LunaWebView)?.onDownloadRequest = { [weak self, weak wv] url in
+            guard let self, let wv else { return }
+            self.startDownload(of: url, from: wv)
+        }
         webViews[tabId] = wv
 
         let titleObservation = wv.observe(\.title, options: [.new]) { [weak self, tabId] webView, _ in
@@ -1186,6 +1190,26 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         return (ns, luminance <= 0.5)
     }
 
+    /// Downloads a URL picked from the page's context menu.
+    private func startDownload(of url: URL, from webView: WKWebView) {
+        if url.scheme == "data" {
+            // Inline images (e.g. Google Images thumbnails) are already in the URL.
+            guard let data = try? Data(contentsOf: url) else { return }
+            DownloadManager.shared.save(data, mimeType: Self.dataURLMIMEType(url), sourceURL: webView.url ?? url)
+            return
+        }
+        var request = URLRequest(url: url)
+        if let page = webView.url { request.setValue(page.absoluteString, forHTTPHeaderField: "Referer") }
+        webView.startDownload(using: request) { [weak self] download in
+            download.delegate = self
+        }
+    }
+
+    private static func dataURLMIMEType(_ url: URL) -> String? {
+        let header = url.absoluteString.dropFirst("data:".count).prefix { $0 != "," }
+        return header.split(separator: ";").first.map(String.init)
+    }
+
     // MARK: - WKDownloadDelegate (saves to ~/Downloads, notifies DownloadManager)
 
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
@@ -1264,7 +1288,7 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         #endif
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        let wv = WKWebView(frame: .zero, configuration: configuration)
+        let wv = LunaWebView(frame: .zero, configuration: configuration)
         wv.customUserAgent = Self.userAgent(for: requestURL)
         register(webView: wv, for: id)
         popupTabIds.insert(id)

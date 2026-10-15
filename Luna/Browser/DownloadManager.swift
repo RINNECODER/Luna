@@ -4,6 +4,7 @@ import SwiftUI
 import AppKit
 import Combine
 import WebKit
+import UniformTypeIdentifiers
 
 /// A single recent download for the hub.
 struct DownloadItem: Identifiable {
@@ -112,6 +113,25 @@ final class DownloadManager: ObservableObject {
         guard let entry = active.removeValue(forKey: id) else { return }
         entry.download.cancel { _ in }
         if let i = recentDownloads.firstIndex(where: { $0.id == id }) { recentDownloads[i].state = .cancelled }
+    }
+
+    /// Saves bytes the page already has (a `data:` image) straight to Downloads.
+    func save(_ data: Data, mimeType: String?, sourceURL: URL) {
+        let ext = mimeType.flatMap { UTType(mimeType: $0)?.preferredFilenameExtension } ?? "bin"
+        let base = mimeType?.hasPrefix("image/") == true ? "image" : "download"
+        var dest = downloadsDirectory.appendingPathComponent("\(base).\(ext)")
+        var n = 1
+        while fileManager.fileExists(atPath: dest.path) {
+            dest = downloadsDirectory.appendingPathComponent("\(base) (\(n)).\(ext)")
+            n += 1
+        }
+        do {
+            try data.write(to: dest)
+        } catch {
+            return
+        }
+        insert(DownloadItem(url: sourceURL, fileURL: dest, suggestedFilename: dest.lastPathComponent))
+        presentHub()
     }
 
     /// Call when a file was saved to path outside WKDownload (e.g. URLSession).
