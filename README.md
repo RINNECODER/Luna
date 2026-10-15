@@ -32,6 +32,8 @@
                                        █░▓
 ```
 
+<p align="center"><img src="site/icon.png" width="112" alt="Luna icon"></p>
+
 <h1 align="center">Luna</h1>
 
 <p align="center"><b>A quieter browser for the Mac.</b><br>
