@@ -162,3 +162,5 @@ Contributions are welcome.
 ## License
 
 [MIT](LICENSE). Use it, fork it and ship it, as long as the copyright notice comes along.
+
+Agent mode (`/agent <goal>` in the AI panel) is a native port of [browser-use/jev-ultrafast](https://github.com/browser-use/jev-ultrafast) (MIT, Copyright (c) 2026 Browser Use).

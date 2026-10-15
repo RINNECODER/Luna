@@ -544,6 +544,11 @@ struct CommandSurfaceView: View {
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        if let goal = Self.agentGoal(in: trimmed) {
+            runAgent(goal: goal, command: trimmed)
+            return
+        }
+
         if let tabManager = webViewWrapper.tabManager,
            let response = commandRouter.proposal(for: trimmed, tabManager: tabManager) {
             messages.append(ChatMessage(role: .user, text: trimmed))
@@ -568,6 +573,46 @@ struct CommandSurfaceView: View {
 
         let context = buildContextString()
         proceedWithStreaming(prompt: trimmed, context: context)
+    }
+
+    /// `/agent <goal>` runs the computer-use agent on this tab.
+    static func agentGoal(in input: String) -> String? {
+        guard input.lowercased().hasPrefix("/agent ") else { return nil }
+        let goal = input.dropFirst("/agent ".count).trimmingCharacters(in: .whitespacesAndNewlines)
+        return goal.isEmpty ? nil : goal
+    }
+
+    /// Streams each agent step into one assistant message. Stop cancels the run.
+    private func runAgent(goal: String, command: String) {
+        guard let webView = tabId.flatMap(webViewWrapper.webViewIfLoaded) ?? webViewWrapper.activeWebView else {
+            errorMessage = "Open a page in this tab first."
+            return
+        }
+        isSending = true
+        errorMessage = nil
+        messages.append(ChatMessage(role: .user, text: command,
+                                    pageURL: webViewWrapper.currentURL?.absoluteString, pageTitle: pageTitle))
+        inputText = ""
+        let agent = LunaToolbox.agent(for: webView)
+        let usesJev = agent.policy is JevPolicy
+        let reply = ChatMessage(role: .assistant,
+                                text: "Agent (\(usesJev ? JevClient.configuredModel : LLMService.shared.modelName)): \(goal)\n",
+                                pageURL: webViewWrapper.currentURL?.absoluteString, pageTitle: pageTitle)
+        messages.append(reply)
+        let replyId = reply.id
+        streamGeneration += 1
+        let generation = streamGeneration
+        streamingTask = Task {
+            for await event in agent.run(goal: goal) {
+                guard generation == streamGeneration,
+                      let line = event.panelLine,
+                      let idx = messages.firstIndex(where: { $0.id == replyId }) else { continue }
+                messages[idx].text += "\n" + line
+            }
+            guard generation == streamGeneration else { return }
+            isSending = false
+            streamingTask = nil
+        }
     }
 
     private func stopStreaming() {

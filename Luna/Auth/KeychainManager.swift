@@ -96,6 +96,7 @@ extension KeychainManager {
         case openAIKey = "openai-api-key"
         case anthropicKey = "anthropic-api-key"
         case chatGPTCredentials = "chatgpt-credentials"
+        case typesafeKey = "typesafe-api-key"
     }
 
     func store(_ value: Data, for account: Account) throws {
