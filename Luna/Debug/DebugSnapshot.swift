@@ -9,14 +9,53 @@ import WebKit
 /// LUNA_SNAPSHOT_SETTINGS=<pane> also shows a Settings window on that pane.
 enum DebugSnapshot {
     /// Hosts the AI panel alone over a sample page so its styling can be checked.
-    static func showPanelPreview(empty: Bool) {
+    /// Messages for `LUNA_SNAPSHOT_PANEL=cards`: a finished and a running agent run, key grabs.
+    static func cardSamples() -> [ChatMessage] {
+        func decided(_ op: String, _ label: String, _ c: Double?) -> AgentEvent {
+            .decided(AgentDecision(choice: "e1", operation: op, target: label.isEmpty ? nil : "1", confidence: c,
+                                   probability: nil, latencyMs: 140, model: "jev"), label: label)
+        }
+        func executed(_ n: Int, _ text: String? = nil, changed: Bool = true) -> AgentEvent {
+            .executed(AgentStepRecord(step: n, action: "e1", kind: "click", choice: "e1", operation: "CLICK", text: text,
+                                      confidence: nil, latencyMs: 0, url: "https://example.com", pageChanged: changed))
+        }
+        var done = AgentRunCard(goal: "Search Wikipedia for the Moon and open the article", model: "jev-1.14")
+        for e in [decided("CLICK", "Search Wikipedia", 0.97), executed(1),
+                  decided("TYPE_TEXT", "Search Wikipedia", 0.94), executed(2, "Moon"),
+                  decided("CLICK", "Moon — natural satellite", 0.88), executed(3),
+                  .finished(.done, steps: 3, elapsedMs: 6200)] { done.apply(e) }
+        var running = AgentRunCard(goal: "Find the opening hours", model: "jev-1.14")
+        for e in [decided("SCROLL_DOWN", "", 0.71), executed(1, changed: false), decided("CLICK", "Hours & location", 0.83)] {
+            running.apply(e)
+        }
+        let openai = KeyService.registry[0]
+        var signIn = GrabCard(service: openai, keyName: "luna-20261015", model: "jev-1.14")
+        signIn.finish(GrabResult(status: .waitingForSignIn, service: openai.name, keyName: "luna-20261015", message: ""))
+        var saved = GrabCard(service: KeyService.registry[5], keyName: "luna-20261015", model: "jev-1.14")
+        saved.finish(GrabResult(status: .saved, service: "Hugging Face", keyName: "luna-20261015",
+                                saved: SecretVault.Saved(handle: "h", keychainItem: "Luna API Keys / huggingface/luna-20261015",
+                                                         account: "huggingface/luna-20261015"), message: ""))
+        let messages = [
+            ChatMessage(role: .assistant, text: done.transcript, card: .agentRun(done)),
+            ChatMessage(role: .assistant, text: saved.transcript, card: .grab(saved)),
+            ChatMessage(role: .assistant, text: signIn.transcript, card: .grab(signIn)),
+            ChatMessage(role: .assistant, text: running.transcript, card: .agentRun(running)),
+        ]
+        switch ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_CARDS"] {
+        case "running": return [ChatMessage(role: .user, text: "Is this place open on Sundays?")] + Array(messages.suffix(2))
+        default: return messages
+        }
+    }
+
+    static func showPanelPreview(mode: String) {
+        let empty = mode == "empty"
         let web = WebViewWrapper(profileId: UUID(), dataStore: .nonPersistent())
         let tabs = TabManager()
         web.tabManager = tabs
         let tab = tabs.newTab(url: URL(string: "https://example.com")!)
         web.setActiveTab(tab)
         web.load(url: URL(string: "https://example.com")!, in: tab)
-        let sample: [ChatMessage] = empty ? [] : [
+        let sample: [ChatMessage] = mode == "cards" ? cardSamples() : empty ? [] : [
             ChatMessage(role: .user, text: "What is this page for?"),
             ChatMessage(role: .assistant, text: "**example.com** is a reserved domain for documentation.\n\n- Safe to use in examples\n- Not a real service\n\nYou can link to it without asking permission."),
         ]
@@ -45,7 +84,22 @@ enum DebugSnapshot {
         guard let base = env["LUNA_SNAPSHOT_PATH"] else { return }
         let delay = Double(env["LUNA_SNAPSHOT_DELAY"] ?? "") ?? 4
         if let mode = env["LUNA_SNAPSHOT_PANEL"] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay - 2.5)) { showPanelPreview(empty: mode == "empty") }
+            DispatchQueue.main.asyncAfter(deadline: .now() + min(1.5, delay)) { showPanelPreview(mode: mode) }
+            if env["LUNA_SNAPSHOT_MCP"] != nil {
+                DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay - 1.5)) {
+                    Task { _ = await MCPApprovalCenter.shared.ask(client: "claude-code", tool: "navigate",
+                                                                  detail: "https://en.wikipedia.org/wiki/Moon", timeout: 30) }
+                }
+            }
+            #if LUNA_DEV
+            if let prompt = env["LUNA_SNAPSHOT_DEV_PROMPT"], let dir = env["LUNA_SNAPSHOT_DEV_DIR"] {
+                Task {
+                    let c = DevSessionController.shared
+                    await c.start(kind: .claudeCode, projectDir: URL(fileURLWithPath: dir), model: "haiku", resume: false)
+                    c.send(prompt)
+                }
+            }
+            #endif
         }
         if env["LUNA_SNAPSHOT_SETTINGS"] != nil {
             DispatchQueue.main.asyncAfter(deadline: .now() + max(0, delay - 1.5)) {
