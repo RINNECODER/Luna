@@ -242,6 +242,35 @@ final class PersonalizationTests: XCTestCase {
         XCTAssertTrue(context.bookmarks.bookmarks.isEmpty)
     }
 
+    func testBookmarksAreNamedFromHistoryTitles() async throws {
+        defaults.set(true, forKey: PersonalizationPrefs.enabledKey)
+        visit("https://news.ycombinator.com/item?id=1", daysAgo: 2, title: "Show HN: A thing")
+        visit("https://news.ycombinator.com/", daysAgo: 1, title: "Hacker News")
+        visit("https://mail.google.com/mail/u/0/", title: "Inbox (3) - someone@example.com - Gmail")
+        visit("https://www.theverge.com/2026/10/1/story", title: "A long story headline | The Verge")
+        visit("https://example.org/", title: "A home page title that is far too long to fit a bookmark bar")
+        XCTAssertEqual(PersonalizationReport.siteName(for: URL(string: "https://news.ycombinator.com")!, history: history), "Hacker News")
+        XCTAssertEqual(PersonalizationReport.siteName(for: URL(string: "https://mail.google.com")!, history: history), "Gmail")
+        XCTAssertEqual(PersonalizationReport.siteName(for: URL(string: "https://theverge.com")!, history: history), "The Verge")
+        XCTAssertNil(PersonalizationReport.siteName(for: URL(string: "https://example.org")!, history: history))
+
+        let added = try await toolbox.call("bookmarks_add", arguments: ["url": "https://news.ycombinator.com"])
+        XCTAssertFalse(added.isError, added.text)
+        _ = try await toolbox.call("bookmarks_add", arguments: ["url": "https://example.org"])
+        XCTAssertEqual(context.bookmarks.bookmarks.map(\.title), ["Hacker News", "Example"], "unknown titles fall back to the domain")
+
+        visit("https://news.ycombinator.com/", title: "Hacker News")
+        visit("https://news.ycombinator.com/", title: "Hacker News")
+        let card = Personalize.suggestions(request: "bookmarks", ctx: context, customizer: customizer)
+        XCTAssertTrue(card.items.contains { $0.line.to == "Hacker News (news.ycombinator.com)" } == false,
+                      "already bookmarked sites are skipped")
+        XCTAssertTrue(card.items.contains { $0.line.to == "Gmail (mail.google.com)" }, card.items.map(\.line.to).description)
+
+        defaults.set(false, forKey: PersonalizationPrefs.enabledKey)
+        XCTAssertNil(context.named(.init(url: URL(string: "https://mail.google.com")!, title: nil)).title,
+                     "history isn't read when personalization is off")
+    }
+
     // MARK: MCP
 
     func testMCPListsTheToolsAndAlwaysPreviewsCustomizations() async throws {

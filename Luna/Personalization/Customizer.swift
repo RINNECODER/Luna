@@ -11,6 +11,16 @@ struct PersonalizationContext {
     let workspace: WorkspaceStore?
 }
 
+extension PersonalizationContext {
+    /// Fills a missing title from the page titles in history (opted-in profiles only);
+    /// otherwise the bookmark store names it from the domain.
+    func named(_ site: CustomizationPlan.Site) -> CustomizationPlan.Site {
+        guard (site.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, usage.isEnabled,
+              let name = PersonalizationReport.siteName(for: site.url, history: history()) else { return site }
+        return CustomizationPlan.Site(url: site.url, title: name)
+    }
+}
+
 struct SettingChange: Equatable {
     let key: String
     let value: JSONValue

@@ -186,8 +186,9 @@ enum Personalize {
         if bookmark, ctx?.bookmarks.contains(url) == true { return }
         if !bookmark, let ws = ctx?.workspace?.workspace,
            ws.favorites.contains(where: { ws.tabs[$0]?.url?.host == url.host }) { return }
-        let site = CustomizationPlan.Site(url: url, title: title)
-        card.items.append(.init(id: id, action: bookmark ? .bookmark(url: url, title: title) : .favorite(url: url, title: title),
+        let raw = CustomizationPlan.Site(url: url, title: title)
+        let site = ctx?.named(raw) ?? raw
+        card.items.append(.init(id: id, action: bookmark ? .bookmark(url: url, title: site.title) : .favorite(url: url, title: site.title),
                                 line: ChangeLine(title: bookmark ? "Add bookmark" : "Add to Favorites", from: nil,
                                                  to: Customizer.siteLabel(site))))
     }

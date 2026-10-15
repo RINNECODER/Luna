@@ -197,7 +197,7 @@ enum PersonalizationTools {
             sitePreview(call).map { Customizer.shared.preview(CustomizationPlan(favorites: [$0])).map(\.text).joined() } ?? ""
         }
     ) { call in
-        let site = CustomizationPlan.Site(url: try call.url("url"), title: call.string("title"))
+        let site = try requestedSite(call)
         let change = try Customizer.shared.apply(CustomizationPlan(favorites: [site]), context: call.host.personalization,
                                                  source: call.source)
         return applied(change)
@@ -213,7 +213,7 @@ enum PersonalizationTools {
             sitePreview(call).map { Customizer.shared.preview(CustomizationPlan(bookmarks: [$0])).map(\.text).joined() } ?? ""
         }
     ) { call in
-        let site = CustomizationPlan.Site(url: try call.url("url"), title: call.string("title"))
+        let site = try requestedSite(call)
         guard let ctx = call.host.personalization else { throw LunaToolError.unavailable("No Luna profile is open.") }
         if ctx.bookmarks.contains(site.url) { return "Already bookmarked." }
         let change = try Customizer.shared.apply(CustomizationPlan(bookmarks: [site]), context: ctx, source: call.source)
@@ -273,7 +273,13 @@ enum PersonalizationTools {
     }
 
     private static func sitePreview(_ call: LunaToolCall) -> CustomizationPlan.Site? {
-        (try? call.url("url")).map { CustomizationPlan.Site(url: $0, title: call.string("title")) }
+        try? requestedSite(call)
+    }
+
+    /// The site to add, named from history when the caller gave no title.
+    private static func requestedSite(_ call: LunaToolCall) throws -> CustomizationPlan.Site {
+        let site = CustomizationPlan.Site(url: try call.url("url"), title: call.string("title"))
+        return call.host.personalization?.named(site) ?? site
     }
 
     private static func applied(_ change: AIChange) -> String {
@@ -315,6 +321,47 @@ enum PersonalizationReport {
         return counts.map { Site(domain: $0.key, visits: $0.value.0, lastVisit: $0.value.1) }
             .sorted { $0.visits != $1.visits ? $0.visits > $1.visits : $0.domain < $1.domain }
             .prefix(limit).map { $0 }
+    }
+
+    /// A short name for a site from the titles its pages had in history ("Hacker News" for
+    /// news.ycombinator.com). Home-page visits win; a deeper page counts only when its title
+    /// carries a separated site name ("Story | The Verge"). Nil when nothing short fits.
+    static func siteName(for url: URL, history: [HistoryEvent]) -> String? {
+        guard let host = url.host.map({ SiteShortcut.normalizedHost($0.lowercased()) }) else { return nil }
+        var deep: String?
+        for e in history.reversed() where e.type == .pageVisit {
+            guard let raw = e.url, let visited = URL(string: raw),
+                  visited.host.map({ SiteShortcut.normalizedHost($0.lowercased()) }) == host,
+                  let title = e.pageTitle else { continue }
+            let isHome = visited.path.isEmpty || visited.path == "/"
+            if isHome, let name = shortTitle(title, host: host, isHome: true) { return name }
+            if deep == nil { deep = shortTitle(title, host: host, isHome: false) }
+        }
+        return deep
+    }
+
+    /// "Inbox (3) - someone@x.com - Gmail" → "Gmail"; "Hacker News" → "Hacker News".
+    static func shortTitle(_ title: String, host: String, isHome: Bool, maxLength: Int = 24) -> String? {
+        var parts = [title]
+        for sep in [" - ", " – ", " — ", " | ", " · ", " • ", ": "] {
+            parts = parts.flatMap { $0.components(separatedBy: sep) }
+        }
+        let segments = parts.map { $0.replacingOccurrences(of: #"^\(\d+\)\s*"#, with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && !$0.contains("@") }
+        guard !segments.isEmpty else { return nil }
+        let labels = host.split(separator: ".").dropLast().map { String($0).lowercased() }.filter { $0.count >= 3 }
+        func compact(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let match = segments.first { seg in
+            let c = compact(seg)
+            return c.count >= 3 && labels.contains { $0.contains(c) || c.hasPrefix($0) }
+        }
+        let pick: String?
+        if let match { pick = match }
+        else if parts.count == 1 { pick = isHome ? segments[0] : nil }
+        else { pick = isHome ? segments.first : segments.last }
+        guard let name = pick, name.count <= maxLength else { return nil }
+        return name
     }
 
     /// Case-insensitive match on title or address; addresses lose their query string and fragment.
