@@ -62,6 +62,8 @@ enum InverseOp: Codable, Equatable {
     case removeTab(UUID)
     /// Ungroup the folder, then put each tab back where it was.
     case ungroup(folder: UUID, places: [TabPlace])
+    /// Rebuild a split view the change broke up, where it was (runs after `ungroup`).
+    case resplit(group: SplitGroup, place: TabPlace)
     case reorder(space: UUID, section: String, order: [UUID])
     case unpin(tab: UUID, place: TabPlace?, savedURL: URL?)
     case repin(tab: UUID, place: TabPlace?, favoriteIndex: Int?, savedURL: URL?)
@@ -297,6 +299,8 @@ final class Customizer {
                     ws.ungroupFolder(folder)
                     for place in places.sorted(by: { $0.index < $1.index }) { put(place, in: &ws) }
                 }
+            case .resplit(let group, let place):
+                context.workspace?.update("Undo AI Change") { $0.restoreSplit(group, at: place.location) }
             case .reorder(let space, let section, let order):
                 context.workspace?.update("Undo AI Change") { ws in
                     TabOrganizer.permute(&ws, space: space, section: SidebarSection(rawValue: section) ?? .today, to: order)

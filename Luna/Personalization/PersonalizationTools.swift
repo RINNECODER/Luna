@@ -115,14 +115,23 @@ enum PersonalizationTools {
         guard tabIds.count >= 2 else { throw LunaToolError.invalidArguments("tabs_group: give at least 2 tabs.") }
         let name = (call.string("name") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         var places: [TabPlace] = []
+        var splits: [TabPlace] = []
+        var groups: [SplitGroup] = []
         var folder: UUID?
         var problem: LunaToolError?
         store.update("Group Tabs") { ws in
             for id in tabIds {
-                guard ws.tabs[id] != nil, !ws.isFavorite(id), let loc = ws.location(ofNode: id) else {
+                // A split pane isn't a sidebar node itself: it sits where its split is.
+                let split = ws.splitGroup(containing: id)
+                guard ws.tabs[id] != nil, !ws.isFavorite(id), let loc = ws.location(ofNode: split?.id ?? id) else {
                     problem = .invalidArguments("Tab \(id.uuidString) can't be grouped (unknown, or in Favorites)."); return
                 }
-                places.append(TabPlace(tab: id, loc))
+                if let split {
+                    // Undo rebuilds the split at its old spot instead of placing the pane alone.
+                    if !splits.contains(where: { $0.tab == split.id }) { splits.append(TabPlace(tab: split.id, loc)); groups.append(split) }
+                } else {
+                    places.append(TabPlace(tab: id, loc))
+                }
             }
             tabIds.forEach { _ = ws.detachTabFromAnySplit($0) }
             guard let first = ws.location(ofNode: tabIds[0]) else { return }
@@ -132,7 +141,8 @@ enum PersonalizationTools {
         guard let folder else { throw LunaToolError.unavailable("Couldn't create the folder.") }
         let change = Customizer.shared.record(
             lines: [ChangeLine(title: "New folder “\(name)”", from: nil, to: "\(tabIds.count) tabs")],
-            inverse: [.ungroup(folder: folder, places: places)], profileId: ctx.profileId, source: call.source)
+            inverse: zip(groups, splits).map { InverseOp.resplit(group: $0, place: $1) } + [.ungroup(folder: folder, places: places)],
+            profileId: ctx.profileId, source: call.source)
         return applied(change)
     }
 

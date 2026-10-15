@@ -235,6 +235,17 @@ final class PersonalizationTests: XCTestCase {
         _ = try customizer.undo(try XCTUnwrap(customizer.log.entries.first?.id))
         XCTAssertEqual(store.activeSpace.today, before)
 
+        // Grouping a split pane breaks the split; undo puts the pairing back.
+        let split = try XCTUnwrap(store.split([ids[0], ids[1]]))
+        let withSplit = store.activeSpace.today
+        let fromSplit = try await toolbox.call("tabs_group", arguments: ["tab_ids": .array([.string(ids[1].uuidString), .string(ids[2].uuidString)]),
+                                                                         "name": "Read"])
+        XCTAssertFalse(fromSplit.isError, fromSplit.text)
+        XCTAssertNil(store.workspace.splitGroup(containing: ids[0]))
+        _ = try customizer.undo(try XCTUnwrap(customizer.log.entries.first?.id))
+        XCTAssertEqual(store.activeSpace.today, withSplit)
+        XCTAssertEqual(store.workspace.splitGroup(containing: ids[1])?.id, split)
+
         let bookmarked = try await toolbox.call("bookmarks_add", arguments: ["url": "github.com", "title": "GitHub"])
         XCTAssertFalse(bookmarked.isError, bookmarked.text)
         XCTAssertEqual(context.bookmarks.bookmarks.map(\.title), ["GitHub"])
