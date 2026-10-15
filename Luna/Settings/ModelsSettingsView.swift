@@ -26,6 +26,8 @@ struct ModelsSettingsView: View {
             case .gemini: GeminiSection()
             case .ollama: OllamaSection()
             }
+
+            ComputerUseSection()
         }
         .formStyle(.grouped)
     }
@@ -145,6 +147,25 @@ private struct OllamaSection: View {
                 }
             }
             .id(baseURL)
+        }
+    }
+}
+
+// MARK: - Computer use
+
+/// Agent mode (`/agent <goal>` in the AI panel). Uses Jev when a TypeSafe key is saved,
+/// otherwise the provider above picks each step.
+private struct ComputerUseSection: View {
+    @AppStorage(JevClient.modelDefaultsKey) private var model = JevClient.defaultModel
+
+    var body: some View {
+        Section("Computer use (Jev)") {
+            APIKeyField(account: .typesafeKey, placeholder: "TypeSafe API key")
+            TextField("Model", text: $model, prompt: Text(JevClient.defaultModel))
+                .autocorrectionDisabled()
+            Text("Type /agent followed by a goal in the AI panel to let Luna operate the current tab. With a TypeSafe key, Jev picks each step; without one, the model above does. Typed values always come from the model above.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 }

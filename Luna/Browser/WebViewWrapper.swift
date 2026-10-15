@@ -876,6 +876,11 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         }
     }
 
+    /// The active tab's web view, for the computer-use agent.
+    var activeWebView: WKWebView? {
+        activeTab.flatMap { webViews[$0] }
+    }
+
     /// Extracts visible text from the page, bounded to maxChars (default 4000, hard max 12000 per AGENTS.md).
     func evaluateVisibleText(maxChars: Int = 4000, completion: @escaping (String?) -> Void) {
         guard let tabId = activeTab, webViews[tabId] != nil else {
