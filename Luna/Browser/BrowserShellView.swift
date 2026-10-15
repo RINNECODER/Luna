@@ -210,6 +210,17 @@ struct BrowserShellView: View {
         }
         .onAppear {
             #if DEBUG
+            // Space-separated URLs: the first loads in the current tab, the rest in new tabs.
+            if let raw = ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_TABS"] {
+                let urls = raw.split(separator: " ").compactMap { URL(string: String($0)) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    guard let first = urls.first else { return }
+                    navigateToURL(first)
+                    let firstId = tabManager.currentTab
+                    urls.dropFirst().forEach { newTabWithURL($0) }
+                    if let firstId { switchToTab(firstId) }
+                }
+            }
             if let raw = ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_URL"], let url = URL(string: raw) {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { navigateToURL(url) }
             }

@@ -1,133 +1,150 @@
-# Luna Browser
+```text
+                              ████▒▓
+                           ░██▓▒█▓▓▓ ▓ ▒█░░▓
+                     █░▒   :-==-;~+ ▓░░▓▓▓░  ▓      ▒
+                    `:;-~=++**xxx+~~=+=*ox▒▒▓   ▓ ▓ ▒     ░
+                 '`::-~~~=+*xxxoaox**=~~=+*xo·▒▓█░▒    ▒
+               .`,,:-~~==+**xxxoaooooooxxx++oNA%B░▓             ░
+           .  '`,::;;~=+*xooxx*xeO##%&&&&%###%@&%%E               ▒░▓
+          ....'`::;~=+*xxx***xxxxoeO&@@@@&&&@@@@@@@%·             ▒▒░
+      ░.     .'`,:;~++*******xxoooxaO&@@@@@@@&%@@&@@@S    ▓        ░
+           ...''`,:-~++++=~+xxxxoooaaeeO#%&@@%Oe#&&%·%O  ▓ ▓        ░
+   ░░     . .'''`,:;-~=~~~=+*xoaaaaBKIT·MOONLOexoae#eoae █
+   █..      .''`,:::;-~~~==*xxxoaaaT·LUNA·BROaeaooooaxxoo░█▓     ▒  ░░
+█▒▒█     ....'`,,:::;--~~~=++**xxoaR·SWIFT·WEaeaxxxoooooo+██
+█▓░        ..'``,::;;;-~~=====++*xoT·MOONLIGHOao***xooeeex░▒
+   .  .      '`,,:;;---~~===~~~=++xooaeaROWSEeax*+**xxaOea=
+   ..  . ..  '`,,:;--~~~===+====++*xxoeOWEBKIaax+=+*+xaOOe+
+░▓▒ .       ..'`,::;---~~~==++KIT·M**oaeGHT·LUNA·B**xoeO#e*
+▓▓▓           '``,,::::;;;;-=+·LUNA*xoaeSER·SWIFT·OOOOOOOa*
+ █▒.  . .  . . ''`,,,,,,::;-~+*xxxxT·WEBKIT·MaeO#%@%####Oe
+ ▓▓▓ .     . .  ''`````,,::;-~=+xxoLIGHT·LUNA#%%%&&ee%%%%#
+   ▒.       .    .''````,:;;;~=+xxooooaaaaeO#%%%&e*=*O%#O▓░
+   ░▓.            ''``,,,:;;-~=+*xxxxxooooeO##%&ex=+xOea ▒
+         . .       ''`,,,::;-~ONLIG*xxxxoaeeOO##o**xoox▒▓
+               .    .'`,,,,:;--ROWS+*xooxoooooooaox+*+▒
+      █▒░.      ..  . '```,,:;-~~~~=+*xxxx**xxxx**=+
+      ▒▒░   .       . . '``,::;---~~~~~=***xxxx*+~-
+           ░░      ..     ''`,:::;--;;-~~=+==I;;;
+             ▓▓▓..    ..  .  '``,,,,:::;;-;:,,
+                  ░▓ ..   .     ..''''``''██▒
+                  ▓▒▒░░█   .   . .        █▓░
+                                       █░▓
+```
 
-A fast, AI-powered browser built natively for macOS. Luna combines a SwiftUI-based browsing experience with integrated AI chat, privacy-first design, and a clean interface that feels at home on your Mac.
+<h1 align="center">Luna</h1>
 
-![macOS](https://img.shields.io/badge/macOS-15.4%2B-blue)
-![Xcode](https://img.shields.io/badge/Xcode-26.x-blue)
-![Swift](https://img.shields.io/badge/Swift-5-orange)
-![License](https://img.shields.io/badge/License-MIT-green)
+<p align="center"><b>A quieter browser for the Mac.</b><br>
+Native Swift and WebKit, with an AI assistant that shows up when you ask and stays out of the way when you don't.</p>
 
-> **Warning**
-> Luna is in early development and **not yet ready for day-to-day use**.
+<p align="center">
+  <a href="https://rahul4301.github.io/Luna/">Website</a> ·
+  <a href="https://github.com/Rahul4301/Luna/releases/latest">Download</a> ·
+  <a href="https://github.com/Rahul4301/Luna/issues">Report an issue</a>
+</p>
+
+<p align="center">
+  <img alt="macOS 15.4+" src="https://img.shields.io/badge/macOS-15.4%2B-111?style=flat-square">
+  <img alt="Swift" src="https://img.shields.io/badge/Swift-WebKit-111?style=flat-square">
+  <img alt="Xcode 26" src="https://img.shields.io/badge/Xcode-26-111?style=flat-square">
+  <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-111?style=flat-square">
+</p>
+
+> [!WARNING]
+> Luna is in early development and not ready for everyday use yet. Expect rough edges, and please [tell us about them](https://github.com/Rahul4301/Luna/issues).
 
 ---
+
+## Why Luna
+
+- **Native, not ported.** SwiftUI on WebKit, the engine behind Safari. No Electron, no Chromium.
+- **Search first.** The start page sends lookups to Google. Chat is one `⌘↩` away, never in the way.
+- **Your model, your Mac.** Run AI locally with Ollama, or use Google Gemini.
+- **Private by default.** uBlock Origin Lite built in, API keys in your Keychain, nothing collected.
 
 ## Features
 
-### Browser
+**Browsing**
 
-- Native macOS UI built entirely with SwiftUI and WebKit
-- Tab management with drag-and-drop reordering and dynamic tab widths
-- Theme-aware chrome that adapts to page colors
-- Address bar with URL autocomplete, search suggestions, and history
-- Download manager with a built-in downloads hub
-- Find in page, print support, zoom controls, and keyboard shortcuts
+- Tabs in a sidebar or along the top, with drag to reorder, pinned tabs and favorites
+- Drag a tab into another window, or out onto the desktop for a new window
+- Split view: drop one tab onto another to see both side by side
+- Address bar with autocomplete, search suggestions and history
+- Downloads hub, find in page, print, zoom and keyboard shortcuts for everything
 
-### AI Assistant (Luna)
+**Luna AI**
 
-- Built-in AI side panel — toggle with `Cmd+E`
-- Smart start page with intent classification (AI chat vs. web search)
-- AI-powered command routing for browser actions (open tab, navigate, etc.)
-- Per-tab chat history with conversation summarization
-- Document context support (PDF, TXT, MD, JSON, CSV, XML, HTML)
-- Markdown, code block, and LaTeX rendering in AI responses
+- Side panel that chats about the page you're on (`⌘E`)
+- Add other tabs or files as context: PDF, TXT, MD, JSON, CSV, XML, HTML
+- Per-tab chat history with summaries
+- Markdown, code and LaTeX in answers
+- Browser commands in plain language: "open a new tab", "go to…"
 
-### Privacy & Security
+**Privacy**
 
+- uBlock Origin Lite, bundled
 - API keys stored in the macOS Keychain
 - App sandbox with minimal permissions
-- No unnecessary data collection
 
----
+## Get Luna
 
-## Recommended AI Provider
+1. Download `Luna.dmg` from the [latest release](https://github.com/Rahul4301/Luna/releases/latest).
+2. Open it and drag Luna into Applications.
+3. If macOS says it can't check the app, right-click Luna and choose **Open**.
 
-Luna supports multiple AI backends. For the best experience, we recommend using **[gpt-oss 120B](https://ollama.com/library/gpt-oss:120b)** via Ollama as your AI provider.
+## Bring your own model
 
-gpt-oss 120B is OpenAI's open-weight model designed for powerful reasoning, agentic tasks, and versatile developer use cases. It ships with full chain-of-thought, native function calling, and runs under a permissive Apache 2.0 license.
-
-**Getting started with gpt-oss 120B:**
-
-1. Install [Ollama](https://ollama.com/download) if you haven't already.
-2. Pull the model:
-   ```bash
-   ollama run gpt-oss:120b
-   ```
-3. In Luna, open **Settings > AI & Models**, select **Ollama** as your provider, and choose `gpt-oss:120b` from the model list.
-
-Luna also supports **Google Gemini** (cloud) and any other model available through your local Ollama instance.
-
----
-
-## Installation
-
-1. **Clone and set up:**
-
-   ```bash
-   git clone https://github.com/Rahul4301/Luma.git
-   cd Luma
-   ./scripts/setup.sh
-   ```
-
-2. **Configure code signing** (one-time):
-
-   Open `Signing.xcconfig` (created by the setup script) and set your Apple Team ID — find yours at [Apple Developer Membership](https://developer.apple.com/account#MembershipDetailsCard):
-
-   ```
-   DEVELOPMENT_TEAM = YOUR_TEAM_ID
-   ```
-
-3. **Open and build:**
-
-   ```bash
-   open Luna.xcodeproj
-   ```
-
-   Then **Product > Run** (`Cmd+R`) in Xcode.
-
-> **Note:** The Xcode project is generated locally via [XcodeGen](https://github.com/yonaskolb/XcodeGen) and is not checked into the repository. Always run `./scripts/setup.sh` after cloning.
-
-### Regenerating the Xcode Project
-
-If you modify `project.yml` or pull changes that affect the project structure:
+Luna works with Google Gemini (cloud) or any model in your local [Ollama](https://ollama.com/download) install. For the best results we recommend [gpt-oss 120B](https://ollama.com/library/gpt-oss:120b), OpenAI's open-weight model with full chain of thought and native tool calling, under Apache 2.0:
 
 ```bash
-xcodegen
+ollama run gpt-oss:120b
 ```
 
----
+Then in Luna, open **Settings › AI & Models**, choose **Ollama** and pick `gpt-oss:120b`.
 
-## Keyboard Shortcuts
+## Build from source
+
+You need Xcode 26 and macOS 15.4 or later.
+
+```bash
+git clone https://github.com/Rahul4301/Luna.git
+cd Luna
+./scripts/setup.sh
+```
+
+Set your Apple Team ID in `Signing.xcconfig` (the setup script creates it). Find yours under [Membership details](https://developer.apple.com/account#MembershipDetailsCard):
+
+```
+DEVELOPMENT_TEAM = YOUR_TEAM_ID
+```
+
+Then open `Luna.xcodeproj` and press `⌘R`.
+
+The Xcode project is generated by [XcodeGen](https://github.com/yonaskolb/XcodeGen) and isn't checked in. Run `xcodegen` again after changing `project.yml` or pulling changes to the project structure.
+
+## Keyboard shortcuts
 
 | Shortcut | Action |
-|----------|--------|
-| `Cmd+E` | Toggle AI panel |
-| `Cmd+T` | New tab |
-| `Cmd+W` | Close tab |
-| `Cmd+L` | Focus address bar |
-| `Cmd+F` | Find in page |
-| `Cmd+Y` | View history |
-| `Cmd+1–9` | Switch to tab by index |
-| `Cmd+Plus/Minus` | Zoom in/out |
-| `Cmd+0` | Reset zoom |
-
----
+|---|---|
+| `⌘T` | New tab |
+| `⌘W` | Close tab |
+| `⌘L` | Focus the address bar |
+| `⌘E` | Toggle the AI panel |
+| `⌘F` | Find in page |
+| `⌘Y` | History |
+| `⌘1`–`⌘9` | Jump to a tab |
+| `⌘+` / `⌘−` / `⌘0` | Zoom in, out, reset |
 
 ## Contributing
 
-Contributions are welcome! Please follow these steps:
+Contributions are welcome.
 
-1. Fork the repo and clone your fork.
-2. Create a branch: `git checkout -b feature/your-feature`
-3. Run `./scripts/setup.sh` to generate the Xcode project and set up signing.
-4. Make your changes, build, and test.
-5. Ensure you do **not** commit `Signing.xcconfig` or any file containing your Team ID.
-6. Push to your fork and open a pull request against the upstream repository.
-
----
+1. Fork the repo and create a branch: `git checkout -b feature/your-feature`
+2. Run `./scripts/setup.sh` and set up signing as above.
+3. Make your change, then build and test.
+4. Don't commit `Signing.xcconfig` or anything containing your Team ID.
+5. Open a pull request against `main`.
 
 ## License
 
-This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
-
-You are free to use, modify, fork, and distribute this project, provided that the original copyright notice and license are included in all copies or substantial portions of the software.
+[MIT](LICENSE). Use it, fork it and ship it, as long as the copyright notice comes along.
