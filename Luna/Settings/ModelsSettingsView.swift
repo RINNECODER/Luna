@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Settings → AI & Models: choose a provider, sign in or add a key, pick a model.
@@ -28,6 +29,7 @@ struct ModelsSettingsView: View {
             }
 
             ComputerUseSection()
+            ConnectAgentsSection()
         }
         .formStyle(.grouped)
     }
@@ -167,6 +169,82 @@ private struct ComputerUseSection: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// "Connect agents": Luna's loopback MCP server for Claude Code, Codex and other MCP clients.
+private struct ConnectAgentsSection: View {
+    @AppStorage(LunaMCPBridge.enabledKey) private var enabled = false
+    @AppStorage(LunaMCPBridge.trustedKey) private var trusted = false
+    @AppStorage(LunaMCPBridge.portKey) private var port = LunaMCPBridge.defaultPort
+    @ObservedObject private var bridge = LunaMCPBridge.shared
+    @State private var portText = ""
+    @State private var copied: String?
+    @State private var confirmRegenerate = false
+
+    var body: some View {
+        Section("Connect agents") {
+            Toggle("Let agents drive Luna (MCP server)", isOn: $enabled)
+                .onChange(of: enabled) { _, _ in bridge.applySettings() }
+            LabeledContent("Port") {
+                TextField("Port", text: $portText, prompt: Text(String(LunaMCPBridge.defaultPort)))
+                    .frame(width: 80)
+                    .multilineTextAlignment(.trailing)
+                    .onSubmit(applyPort)
+            }
+            LabeledContent("Status") { Text(statusText).foregroundStyle(statusIsError ? .red : .secondary) }
+            Toggle("Don't ask before agents act (trusted)", isOn: $trusted)
+            HStack {
+                Button("Copy Claude Code command") { copy(bridge.claudeCommand, "Claude Code command") }
+                Button("Copy Codex config") { copy(bridge.codexConfig, "Codex config") }
+                Button("Copy token export") { copy(bridge.codexTokenExport, "token export") }
+            }
+            HStack {
+                Button("Regenerate token", role: .destructive) { confirmRegenerate = true }
+                if let copied { Text("Copied \(copied).").font(.callout).foregroundStyle(.secondary) }
+            }
+            Text("Outside agents get the same tools as /agent: tabs, navigate, snapshot, click, type, select, scroll, read and run_task. Luna listens on 127.0.0.1 only and asks before an agent navigates, types, clicks or runs a task, once per agent session. For Codex, paste the config into ~/.codex/config.toml and set LUNA_MCP_TOKEN with the token export.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .onAppear { portText = String(port) }
+        .confirmationDialog("Regenerate the token?", isPresented: $confirmRegenerate) {
+            Button("Regenerate", role: .destructive) {
+                bridge.regenerateToken()
+                copied = nil
+            }
+        } message: {
+            Text("Connected agents stop working until you give them the new token.")
+        }
+    }
+
+    private var statusText: String {
+        switch bridge.status {
+        case .off: return "Off"
+        case .starting: return "Starting…"
+        case .running(let p): return "Listening on http://127.0.0.1:\(p)/mcp"
+        case .failed(let message): return message
+        }
+    }
+
+    private var statusIsError: Bool {
+        if case .failed = bridge.status { return true }
+        return false
+    }
+
+    private func applyPort() {
+        guard let value = Int(portText.trimmingCharacters(in: .whitespaces)), (1024...65535).contains(value) else {
+            portText = String(port)
+            return
+        }
+        port = value
+        if enabled { bridge.applySettings() }
+    }
+
+    private func copy(_ text: String, _ what: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        copied = what
     }
 }
 

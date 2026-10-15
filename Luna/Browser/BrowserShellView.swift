@@ -424,6 +424,8 @@ struct BrowserShellView: View {
             applyTrafficLights()
             // Other windows can drop tabs into this one.
             if let window {
+                // Agent tools (MCP bridge) drive the front-most browser window.
+                LunaBrowserHosts.shared.register(window: window) { sessionStore.activeSession }
                 TabDropTargets.shared.register(.init(
                     window: window,
                     profileId: { sessionStore.activeProfileId },

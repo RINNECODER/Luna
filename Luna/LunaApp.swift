@@ -13,6 +13,10 @@ struct LunaApp: App {
         #if DEBUG
         DebugSnapshot.scheduleIfRequested()
         #endif
+        // "Connect agents" MCP server, if turned on in Settings (never inside unit tests).
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            DispatchQueue.main.async { LunaMCPBridge.shared.applySettings() }
+        }
     }
 
     var body: some Scene {
