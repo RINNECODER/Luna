@@ -79,9 +79,33 @@ enum DebugSnapshot {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// `LUNA_SNAPSHOT_SEED_USAGE`: fills the active profile's usage record and history with
+    /// sample habits so Personalize has something to read (turns personalization on).
+    static func seedUsage() {
+        UserDefaults.standard.set(true, forKey: PersonalizationPrefs.enabledKey)
+        let profile = Usage.profileId()
+        let usage = UsageStore.forProfile(profile)
+        let counts: [(UsageFeature, Int)] = [(.newTab, 30), (.addressBar, 22), (.splitView, 12), (.find, 8),
+                                             (.aiChat, 6), (.history, 4), (.downloads, 3)]
+        for (feature, n) in counts { for _ in 0..<n { usage.record(feature) } }
+        for (shortcut, n) in [("⌘T", 25), ("⌘L", 14), ("⌘F", 8)] { for _ in 0..<n { usage.recordShortcut(shortcut) } }
+        usage.noteOpenTabs(14)
+        let history = ProfileStoreRegistry.stores(for: profile).history
+        let sites = [("https://github.com/", "GitHub", 9), ("https://news.ycombinator.com/", "Hacker News", 6),
+                     ("https://en.wikipedia.org/wiki/Moon", "Moon - Wikipedia", 4), ("https://developer.apple.com/documentation/", "Apple Developer", 3),
+                     ("https://www.youtube.com/", "YouTube", 2)]
+        for round in 0..<9 {
+            for (url, title, n) in sites where round < n {
+                history.recordPageVisit(url: URL(string: url + (round == 0 ? "" : "?r=\(round)"))!, title: title)
+            }
+        }
+        history.flush()
+    }
+
     static func scheduleIfRequested() {
         let env = ProcessInfo.processInfo.environment
         guard let base = env["LUNA_SNAPSHOT_PATH"] else { return }
+        if env["LUNA_SNAPSHOT_SEED_USAGE"] != nil { seedUsage() }
         let delay = Double(env["LUNA_SNAPSHOT_DELAY"] ?? "") ?? 4
         if let mode = env["LUNA_SNAPSHOT_PANEL"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + min(1.5, delay)) { showPanelPreview(mode: mode) }

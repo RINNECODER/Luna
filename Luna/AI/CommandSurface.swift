@@ -101,11 +101,20 @@ struct CommandSurfaceView: View {
         .onAppear {
             MCPApprovalCenter.shared.panelAppeared()
             #if DEBUG
+            if ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_NEW_CHAT"] != nil { messages = [] }
             if let mode = ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_COMPOSER"].flatMap(ComposerMode.init(rawValue:)) {
                 composerMode = mode
             }
             if let text = ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_SEND"] {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { inputText = text; sendCommand() }
+            }
+            // Personalize screenshots: press Apply, then Undo, on the last card after these delays.
+            for (key, action) in [("LUNA_SNAPSHOT_APPLY", CustomizationCardView.Action.apply), ("LUNA_SNAPSHOT_UNDO", .undo)] {
+                if let delay = ProcessInfo.processInfo.environment[key].flatMap(Double.init) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        if let last = messages.last { handlePersonalize(action, messageId: last.id) }
+                    }
+                }
             }
             #endif
             restoreConversationSummary()
@@ -256,6 +265,7 @@ struct CommandSurfaceView: View {
                                 onStopRun: stopStreaming,
                                 onResumeGrab: resumeGrab,
                                 onDismissGrab: { dismissGrab(id: msg.id) },
+                                onPersonalize: { action in handlePersonalize(action, messageId: msg.id) },
                                 isLastMessage: msg.id == messages.last?.id
                             )
                             .id(msg.id)
@@ -294,6 +304,7 @@ struct CommandSurfaceView: View {
                 .init(title: "What are the key takeaways?") { send("What are the key takeaways?") },
                 .init(title: "Do a task on this tab…") { setMode(.agent) },
                 .init(title: "Get an API key…") { setMode(.grab) },
+                .init(title: "Set up Luna the way I use it") { setMode(.personalize); sendCommand() },
             ],
             isBusy: isSending
         )
@@ -328,13 +339,14 @@ struct CommandSurfaceView: View {
     // The mode button on the left switches between Chat, Agent and Grab key.
 
     enum ComposerMode: String, CaseIterable {
-        case chat, agent, grab
+        case chat, agent, grab, personalize
 
         var title: String {
             switch self {
             case .chat: return "Chat"
             case .agent: return "Agent"
             case .grab: return "Grab Key"
+            case .personalize: return "Personalize"
             }
         }
 
@@ -343,6 +355,7 @@ struct CommandSurfaceView: View {
             case .chat: return "bubble.left"
             case .agent: return "cursorarrow.rays"
             case .grab: return "key"
+            case .personalize: return "slider.horizontal.3"
             }
         }
 
@@ -351,6 +364,7 @@ struct CommandSurfaceView: View {
             case .chat: return "Ask about this page"
             case .agent: return "Do a task on this tab  /agent"
             case .grab: return "Create an API key into the Keychain  /grab"
+            case .personalize: return "Set up Luna from how you use it  /personalize"
             }
         }
 
@@ -359,6 +373,7 @@ struct CommandSurfaceView: View {
             case .chat: return "Ask anything…"
             case .agent: return "Describe a task for this tab…"
             case .grab: return "Key name (optional)"
+            case .personalize: return "What should change? (optional)"
             }
         }
     }
@@ -385,6 +400,8 @@ struct CommandSurfaceView: View {
                 modeHint("Runs on this tab · \(agentModelLabel)")
             case .grab:
                 grabServiceRow()
+            case .personalize:
+                modeHint("Suggests settings and bookmarks · you approve each change")
             }
 
             HStack(alignment: .bottom, spacing: 2) {
@@ -422,7 +439,8 @@ struct CommandSurfaceView: View {
 
                 ChatSendStopButton(
                     isSending: isSending,
-                    canSend: composerMode == .grab || !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    canSend: composerMode == .grab || composerMode == .personalize
+                        || !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     onSend: sendCommand,
                     onStop: stopStreaming
                 )
@@ -745,6 +763,11 @@ struct CommandSurfaceView: View {
             runGrab(service: grabService, keyName: trimmed.isEmpty ? KeyGrabber.defaultKeyName() : trimmed)
             return
         }
+        if composerMode == .personalize {
+            runPersonalize(request: trimmed)
+            return
+        }
+        if trimmed.lowercased() == "/personalize" { inputText = ""; setMode(.personalize); return }
         guard !trimmed.isEmpty else { return }
 
         // Slash commands stay as shortcuts for the composer modes.
@@ -827,6 +850,7 @@ struct CommandSurfaceView: View {
         switch card {
         case .agentRun(let run): messages[idx].text = run.transcript
         case .grab(let grab): messages[idx].text = grab.transcript
+        case .personalize(let p): messages[idx].text = p.transcript
         }
     }
 
@@ -840,6 +864,7 @@ struct CommandSurfaceView: View {
         isSending = true
         errorMessage = nil
         inputText = ""
+        Usage.record(.aiGrabKey)
         let card = GrabCard(service: service, keyName: keyName, model: agentModelLabel)
         let reply = ChatMessage(role: .assistant, text: card.transcript, card: .grab(card))
         messages.append(reply)
@@ -873,6 +898,72 @@ struct CommandSurfaceView: View {
         }
     }
 
+    // MARK: Personalize
+
+    /// Reads the opt-in usage record, asks the chosen model for a proposal restricted to the
+    /// settings registry, bookmarks and favorites, and shows it as a preview card. Nothing
+    /// changes until the user presses Apply.
+    private func runPersonalize(request: String) {
+        isSending = true
+        errorMessage = nil
+        inputText = ""
+        Usage.record(.aiPersonalize)
+        if !request.isEmpty { messages.append(ChatMessage(role: .user, text: request)) }
+        let card = CustomizationCard(request: request, source: LLMService.shared.modelName)
+        let reply = ChatMessage(role: .assistant, text: card.transcript, card: .personalize(card))
+        messages.append(reply)
+        let replyId = reply.id
+        streamGeneration += 1
+        let generation = streamGeneration
+        let ctx = LunaBrowserHosts.shared.current?.personalization
+        var useModel = true
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_PERSONALIZE_OFFLINE"] != nil { useModel = false }
+        #endif
+        let askModel = useModel
+        streamingTask = Task {
+            let proposal = await Personalize.propose(request: request, ctx: ctx, useModel: askModel)
+            guard generation == streamGeneration else { return }
+            updateCard(replyId) { $0 = .personalize(proposal) }
+            isSending = false
+            streamingTask = nil
+        }
+    }
+
+    private func handlePersonalize(_ action: CustomizationCardView.Action, messageId: UUID) {
+        guard let message = messages.first(where: { $0.id == messageId }), case .personalize(var card)? = message.card else { return }
+        switch action {
+        case .toggle(let itemId):
+            if let i = card.items.firstIndex(where: { $0.id == itemId }) { card.items[i].include.toggle() }
+        case .apply:
+            do {
+                let change = try Customizer.shared.apply(card.plan, context: LunaBrowserHosts.shared.current?.personalization,
+                                                         source: "Luna")
+                card.status = .applied
+                card.changeId = change.id
+                card.message = nil
+            } catch {
+                card.message = error.localizedDescription
+            }
+        case .cancel:
+            card.status = .cancelled
+        case .undo:
+            guard let id = card.changeId else { return }
+            do {
+                _ = try Customizer.shared.undo(id)
+                card.status = .undone
+                card.message = nil
+            } catch {
+                card.message = error.localizedDescription
+            }
+        case .openSettings:
+            SettingsRouter.shared.requestedPane = .personalization
+            openSettings()
+            return
+        }
+        updateCard(messageId) { $0 = .personalize(card) }
+    }
+
     /// Streams each agent step into a run card. Stop cancels the run.
     private func runAgent(goal: String) {
         guard let webView = agentWebView else {
@@ -882,6 +973,7 @@ struct CommandSurfaceView: View {
         isSending = true
         errorMessage = nil
         inputText = ""
+        Usage.record(.aiAgent)
         let agent = LunaToolbox.agent(for: webView)
         let model = agent.policy is JevPolicy ? JevClient.configuredModel : LLMService.shared.modelName
         let card = AgentRunCard(goal: goal, model: model)
@@ -918,6 +1010,9 @@ struct CommandSurfaceView: View {
                 case .grab(var g):
                     if g.status == .running { g.run.markStopped(); g.status = .stopped }
                     card = .grab(g)
+                case .personalize(var p):
+                    if p.status == .thinking { p.status = .cancelled; p.message = "Stopped." }
+                    card = .personalize(p)
                 }
             }
         } else if !last.text.isEmpty {
@@ -928,6 +1023,7 @@ struct CommandSurfaceView: View {
     }
 
     private func proceedWithStreaming(prompt: String, context: String?) {
+        Usage.record(.aiChat)
         let recentContext = Array(messages.dropLast().suffix(6))
 
         // Append placeholder for assistant response

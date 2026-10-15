@@ -5,6 +5,7 @@ import Foundation
 enum ChatCard: Codable, Equatable {
     case agentRun(AgentRunCard)
     case grab(GrabCard)
+    case personalize(CustomizationCard)
 }
 
 /// A computer-use run as the panel shows it: one row per step, then an outcome line.
