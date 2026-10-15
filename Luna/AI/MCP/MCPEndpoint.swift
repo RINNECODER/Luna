@@ -62,17 +62,24 @@ enum MCPGate {
         return host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]"
     }
 
+    static func bearer(_ request: MCPHTTPRequest) -> String {
+        let auth = request.headers["authorization"] ?? ""
+        return auth.lowercased().hasPrefix("bearer ") ? String(auth.dropFirst(7)).trimmingCharacters(in: .whitespaces) : ""
+    }
+
     /// Nil when the request may proceed; otherwise the rejection to send.
-    static func reject(_ request: MCPHTTPRequest, port: UInt16, token: String?) -> MCPHTTPResponse? {
+    /// `alsoAccepted` are extra tokens (per-session Dev mode tokens) checked the same way.
+    static func reject(_ request: MCPHTTPRequest, port: UInt16, token: String?, alsoAccepted: Set<String> = []) -> MCPHTTPResponse? {
         guard request.remoteIsLoopback else { return .text(403, "Forbidden") }
         guard hostAllowed(request.headers["host"], port: port) else { return .text(403, "Invalid Host header") }
         guard originAllowed(request.headers["origin"]) else { return .text(403, "Invalid Origin") }
         guard request.path.split(separator: "?", maxSplits: 1).first.map(String.init) == "/mcp" else {
             return .text(404, "Not found")
         }
-        let auth = request.headers["authorization"] ?? ""
-        let given = auth.lowercased().hasPrefix("bearer ") ? String(auth.dropFirst(7)).trimmingCharacters(in: .whitespaces) : ""
-        guard tokensMatch(given, token ?? "") else {
+        let given = bearer(request)
+        var matched = tokensMatch(given, token ?? "")
+        for extra in alsoAccepted { matched = tokensMatch(given, extra) || matched }
+        guard matched else {
             return .text(401, "Unauthorized", headers: ["WWW-Authenticate": "Bearer"])
         }
         return nil
@@ -103,6 +110,9 @@ final class MCPEndpoint {
     let port: () -> UInt16
     let token: () -> String?
     let isTrusted: () -> Bool
+    /// Per-session tokens handed to Dev mode CLIs: accepted for auth, and their sessions
+    /// skip Luna's approval prompt (the CLI asks the user itself).
+    var trustedTokens: () -> Set<String> = { [] }
     weak var approver: MCPApproving?
     private(set) var sessions: [String: Session] = [:]
 
@@ -118,7 +128,7 @@ final class MCPEndpoint {
     }
 
     func handle(_ request: MCPHTTPRequest) async -> MCPHTTPResponse {
-        if let rejection = MCPGate.reject(request, port: port(), token: token()) { return rejection }
+        if let rejection = MCPGate.reject(request, port: port(), token: token(), alsoAccepted: trustedTokens()) { return rejection }
         if let version = request.headers["mcp-protocol-version"], !Self.supportedVersions.contains(version) {
             return .text(400, "Unsupported MCP-Protocol-Version")
         }
@@ -186,7 +196,9 @@ final class MCPEndpoint {
             }
             return .json(Self.result(id: id, .object(["tools": .array(tools)])))
         case "tools/call":
-            return .json(await callTool(id: id, params: params, session: session))
+            let given = MCPGate.bearer(request)
+            let devTrusted = trustedTokens().contains { MCPGate.tokensMatch(given, $0) }
+            return .json(await callTool(id: id, params: params, session: session, devTrusted: devTrusted))
         default:
             return .json(Self.error(id: id, code: -32601, "Method not found: \(method)"))
         }
@@ -211,7 +223,7 @@ final class MCPEndpoint {
         return .json(Self.result(id: id, result), headers: ["Mcp-Session-Id": session.id])
     }
 
-    private func callTool(id: JSONValue, params: JSONValue?, session: Session?) async -> JSONValue {
+    private func callTool(id: JSONValue, params: JSONValue?, session: Session?, devTrusted: Bool = false) async -> JSONValue {
         guard let name = params?["name"]?.stringValue else {
             return Self.error(id: id, code: -32602, "tools/call needs a tool name")
         }
@@ -222,7 +234,7 @@ final class MCPEndpoint {
         guard case .object(let arguments) = rawArguments else {
             return Self.error(id: id, code: -32602, "arguments must be an object")
         }
-        if tool.mutates, !isTrusted(), session?.allowAll != true {
+        if tool.mutates, !isTrusted(), !devTrusted, session?.allowAll != true {
             // Don't ask the user about a call that would be rejected anyway.
             do { try tool.validate(arguments) } catch {
                 return Self.result(id: id, Self.toolResult(LunaToolResult(text: error.localizedDescription, isError: true)))

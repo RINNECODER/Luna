@@ -28,6 +28,8 @@ final class LunaMCPBridge: ObservableObject {
     private var server: MCPServer?
     private var boundPort: UInt16 = 0
     private var cachedToken: String?
+    /// Tokens issued to Dev mode CLI sessions; valid until the session closes.
+    private(set) var devSessionTokens: Set<String> = []
     private let approvals = MCPApprovalPrompt()
     private lazy var toolbox = LunaToolbox { LunaBrowserHosts.shared.current }
 
@@ -52,6 +54,7 @@ final class LunaMCPBridge: ObservableObject {
         boundPort = configured
         let endpoint = MCPEndpoint(toolbox: toolbox, port: { [weak self] in self?.boundPort ?? configured }, token: { [weak self] in self?.cachedToken ?? token },
                                    isTrusted: { [weak self] in self?.isTrusted ?? false }, approver: approvals)
+        endpoint.trustedTokens = { [weak self] in self?.devSessionTokens ?? [] }
         let server = MCPServer(endpoint: endpoint)
         self.server = server
         status = .starting
@@ -105,6 +108,19 @@ final class LunaMCPBridge: ObservableObject {
         return Data(bytes).base64EncodedString()
             .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
+    }
+
+    // MARK: Dev mode sessions
+
+    /// Luna's tools for one Dev mode CLI session, or nil when the bridge is off. The session
+    /// gets its own token, trusted so Luna does not prompt on top of the CLI's approvals.
+    func devAttachment() -> DevMCPAttachment? {
+        guard isEnabled else { return nil }
+        let token = Self.makeToken()
+        devSessionTokens.insert(token)
+        return DevMCPAttachment(url: url, token: token) { [weak self] in
+            Task { @MainActor in self?.devSessionTokens.remove(token) }
+        }
     }
 
     // MARK: Ready-made client configs
