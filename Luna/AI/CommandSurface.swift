@@ -32,7 +32,6 @@ struct CommandSurfaceView: View {
     @AppStorage(DevPrefs.panelModeKey) private var panelModeRaw: String = AIPanelMode.general.rawValue
     @AppStorage(DevPrefs.terminalKey) private var devTerminal: Bool = false
     @Environment(\.openSettings) private var openSettings
-    @Environment(\.colorScheme) private var windowColorScheme
     @State private var inputText: String = ""
     @State private var errorMessage: String? = nil
     @State private var isSending: Bool = false
@@ -89,9 +88,6 @@ struct CommandSurfaceView: View {
         // No surface of its own: the panel sits on the window chrome, like the
         // sidebar, so the browser, the page and the panel read as one piece.
         .environment(\.colorScheme, .dark)
-        // The panel's type is light-on-dark; on light window chrome it gets the start page's
-        // dark backdrop so it stays readable.
-        .background { if windowColorScheme == .light { ChatSurfaceBackground() } }
         .overlay { if isDropTargeted { FileDropHint() } }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDocumentDrop(providers: providers)
