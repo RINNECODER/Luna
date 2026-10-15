@@ -1,0 +1,45 @@
+import AppKit
+import Observation
+
+/// Routes outside-agent approval requests to an open AI panel as an inline card.
+/// When no panel is on screen, `ask` returns nil and the caller falls back to an alert.
+@MainActor
+@Observable
+final class MCPApprovalCenter {
+    static let shared = MCPApprovalCenter()
+
+    struct Request: Identifiable, Equatable {
+        let id = UUID()
+        let client: String
+        let tool: String
+        let detail: String
+
+        var title: String { "\(client) wants to \(tool.replacingOccurrences(of: "_", with: " "))" }
+    }
+
+    private(set) var pending: [Request] = []
+    private var waiting: [UUID: CheckedContinuation<MCPApproval, Never>] = [:]
+    /// Panels currently on screen (each registers on appear, unregisters on disappear).
+    private(set) var visiblePanels = 0
+
+    func panelAppeared() { visiblePanels += 1 }
+    func panelDisappeared() { visiblePanels = max(0, visiblePanels - 1) }
+
+    /// Shows the request in the open panel and waits for a decision, or nil when no panel is open.
+    func ask(client: String, tool: String, detail: String, timeout: TimeInterval) async -> MCPApproval? {
+        guard visiblePanels > 0 else { return nil }
+        let request = Request(client: client, tool: tool, detail: detail)
+        pending.append(request)
+        NSApp.requestUserAttention(.informationalRequest)
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(timeout))
+            self?.resolve(request.id, .deny)
+        }
+        return await withCheckedContinuation { cont in waiting[request.id] = cont }
+    }
+
+    func resolve(_ id: UUID, _ decision: MCPApproval) {
+        pending.removeAll { $0.id == id }
+        waiting.removeValue(forKey: id)?.resume(returning: decision)
+    }
+}

@@ -224,6 +224,11 @@ final class MCPApprovalPrompt: MCPApproving {
     nonisolated deinit {}
 
     func approve(client: String, tool: String, detail: String) async -> MCPApproval {
+        // An open AI panel shows the request inline; otherwise fall back to a sheet.
+        if let decision = await MCPApprovalCenter.shared.ask(client: client, tool: tool, detail: detail,
+                                                              timeout: Self.timeout) {
+            return decision
+        }
         let alert = NSAlert()
         alert.messageText = "\(client) wants to use Luna: \(tool.replacingOccurrences(of: "_", with: " "))"
         alert.informativeText = (detail.isEmpty ? "" : detail + "\n\n") +

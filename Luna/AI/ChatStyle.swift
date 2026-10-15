@@ -348,3 +348,72 @@ struct LunaChatBubble: View {
     }
 }
 
+
+// MARK: - Cards (agent runs, key grabs, approvals, Dev tools)
+
+extension View {
+    /// A soft rounded block in the conversation, like the user bubble but quieter.
+    /// `tint` colors it for success / attention / errors (as `ChatErrorBanner` does).
+    func chatCard(tint: Color? = nil, padding: CGFloat = 12) -> some View {
+        self
+            .padding(padding)
+            .frame(maxWidth: ChatTokens.chatMaxWidth, alignment: .leading)
+            .background(tint.map { $0.opacity(0.12) } ?? Color.white.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: ChatTokens.cornerRadius, style: .continuous))
+    }
+}
+
+/// The label of a compact pop-up menu in the panel: icon, text, chevron.
+struct ChatMenuLabel: View {
+    var icon: String? = nil
+    let text: String
+    var dimmed = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let icon { Image(systemName: icon).font(.system(size: 10.5)) }
+            Text(text).font(.system(size: 11.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
+            Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+        }
+        .foregroundStyle(dimmed ? ChatTokens.textTertiary : ChatTokens.textSecondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(Color.white.opacity(0.06)))
+        .contentShape(Capsule())
+    }
+}
+
+extension View {
+    /// Plain pull-down menu around a `ChatMenuLabel`.
+    func chatMenuStyle() -> some View {
+        self.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+    }
+}
+
+/// Step / tool status: pulsing dot while running, then a symbol.
+struct ChatStatusIcon: View {
+    enum State { case running, done, failed, warning, stopped, pending }
+    let state: State
+
+    var body: some View {
+        Group {
+            switch state {
+            case .running:
+                Circle().fill(ChatTokens.accent).frame(width: 6, height: 6).modifier(ChatPulse())
+            case .done:
+                Image(systemName: "checkmark.circle.fill").foregroundColor(ChatTokens.accent)
+            case .failed:
+                Image(systemName: "xmark.circle.fill").foregroundColor(ChatTokens.errorText)
+            case .warning:
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+            case .stopped:
+                Image(systemName: "stop.circle").foregroundColor(ChatTokens.textTertiary)
+            case .pending:
+                Image(systemName: "hand.raised.fill").foregroundColor(.orange)
+            }
+        }
+        .font(.system(size: 11))
+        .frame(width: 14, height: 14)
+        .accessibilityHidden(true)
+    }
+}
