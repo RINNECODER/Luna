@@ -8,6 +8,13 @@ final class DevCLITests: XCTestCase {
 
     // MARK: Helpers
 
+    /// A throwaway defaults suite, removed after the test.
+    private func scratchDefaults() -> UserDefaults {
+        let name = "DevCLITests-\(UUID().uuidString)"
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        return UserDefaults(suiteName: name)!
+    }
+
     private func records(_ fixture: String) -> [JSONValue] {
         fixture.split(separator: "\n").filter { !$0.hasPrefix(">>") }.compactMap { CLIText.parse(Data($0.utf8)) }
     }
@@ -268,7 +275,7 @@ final class DevCLITests: XCTestCase {
     }
 
     func testResumeStoreIsPerProjectAndKind() {
-        let defaults = UserDefaults(suiteName: "DevCLITests-\(UUID().uuidString)")!
+        let defaults = scratchDefaults()
         let store = AgentCLIResumeStore(defaults: defaults)
         let a = URL(fileURLWithPath: "/tmp/project-a"), b = URL(fileURLWithPath: "/tmp/project-b")
         store.save("s1", kind: .claudeCode, projectDir: a)
@@ -304,7 +311,7 @@ final class DevCLITests: XCTestCase {
         let first = CLIFixtures.claudeTextTurn.split(separator: "\n").first!
         let (dir, exe) = try fakeCLI("read line\necho '\(first)'\necho 'boom: out of cheese' >&2\nexit 3\n")
         defer { try? FileManager.default.removeItem(at: dir) }
-        let defaults = UserDefaults(suiteName: "DevCLITests-\(UUID().uuidString)")!
+        let defaults = scratchDefaults()
         let session = ClaudeCodeAdapter(mcp: nil, resumeStore: AgentCLIResumeStore(defaults: defaults))
         session.executableOverride = exe
         try await session.start(projectDir: dir, model: nil, resumeID: nil)
@@ -322,7 +329,7 @@ final class DevCLITests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         var revoked = false
         let attachment = DevMCPAttachment(url: "http://127.0.0.1:1/mcp", token: "t") { revoked = true }
-        let session = ClaudeCodeAdapter(mcp: attachment, resumeStore: AgentCLIResumeStore(defaults: UserDefaults(suiteName: "DevCLITests-\(UUID().uuidString)")!))
+        let session = ClaudeCodeAdapter(mcp: attachment, resumeStore: AgentCLIResumeStore(defaults: scratchDefaults()))
         session.executableOverride = exe
         try await session.start(projectDir: dir, model: nil, resumeID: nil)
         XCTAssertTrue(session.isRunning)
