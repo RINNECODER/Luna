@@ -6,7 +6,7 @@ import WebKit
 /// redaction and approval (set `mutates`) all follow from the entry.
 enum LunaTools {
     static let all: [LunaTool] = [
-        tabsList, tabOpen, tabSelect, navigate, snapshot, click, type, select, scroll, read, runTask,
+        tabsList, tabOpen, tabSelect, navigate, snapshot, click, type, select, scroll, read, runTask, grabApiKey,
     ]
 
     static let tabsList = LunaTool(
@@ -15,7 +15,7 @@ enum LunaTools {
     ) { call in
         let tabs = call.host.tabs
         if tabs.isEmpty { return "No tabs." }
-        return tabs.map { "\($0.active ? "*" : " ") \($0.id.uuidString)\t\($0.title.isEmpty ? "(untitled)" : $0.title)\t\($0.url)" }
+        return tabs.map { "\($0.active ? "*" : " ") \($0.id.uuidString)\t\($0.title.isEmpty ? "(untitled)" : $0.title)\t\(AgentRedaction.redactURL($0.url))" }
             .joined(separator: "\n")
     }
 
@@ -152,4 +152,44 @@ enum LunaTools {
         if case .failed(let why) = outcome { throw LunaToolError.unavailable("\(log)\n\nFailed: \(why)") }
         return log
     }
+
+    static let grabApiKey = LunaTool(
+        name: "grab_api_key",
+        description: "Create an API key on a service's dashboard with Luna's agent and save it to the user's macOS Keychain and clipboard. " +
+            "The key value is never returned or shown to any model: the result is a status, the Keychain item name and an opaque handle. " +
+            "If the user must sign in first, the status is waiting_for_user_sign_in; ask them to sign in in Luna, then call again with the returned tab_id. " +
+            "Known services: " + KeyService.registry.map(\.name).joined(separator: ", ") + "; others start at the site's home page.",
+        params: [LunaToolParam(name: "service", kind: .string, description: "Service name (e.g. OpenAI, GitHub) or domain"),
+                 LunaToolParam(name: "key_name", kind: .string, description: "Name for the new key (default luna-<date>)", required: false),
+                 LunaToolParam(name: "url", kind: .string, description: "Key page URL, to override or for services not in the list", required: false),
+                 LunaToolParam(name: "max_steps", kind: .integer, description: "Action budget (default 30)",
+                               required: false, range: 1...AgentPrompts.maxSteps)],
+        mutates: true
+    ) { call in
+        guard var service = KeyService.resolve(call.string("service") ?? "") else {
+            throw LunaToolError.invalidArguments("grab_api_key: unknown service.")
+        }
+        if call.string("url") != nil {
+            service = KeyService(id: service.id, name: service.name, url: try call.url("url"), known: true)
+        }
+        let keyName = call.string("key_name")?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? KeyGrabber.defaultKeyName()
+        let tab: UUID
+        let navigate: (URL) -> Void
+        if call.string("tab_id") != nil {
+            tab = try call.tab()
+            navigate = { call.host.navigate(tab, to: $0) }
+        } else {
+            tab = call.host.openTab(url: service.url)
+            navigate = { _ in }
+        }
+        guard let webView = call.host.webView(for: tab) else { throw LunaToolError.unavailable("The tab could not load.") }
+        var result = await KeyGrabber.shared.grab(service: service, keyName: keyName, webView: webView, navigate: navigate,
+                                                  maxSteps: call.int("max_steps") ?? 30)
+        result.tabId = tab.uuidString
+        return result.json
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

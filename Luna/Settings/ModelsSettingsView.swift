@@ -29,6 +29,7 @@ struct ModelsSettingsView: View {
             }
 
             ComputerUseSection()
+            GrabbedKeysSection()
             ConnectAgentsSection()
         }
         .formStyle(.grouped)
@@ -176,6 +177,47 @@ private struct ComputerUseSection: View {
     }
 }
 
+/// Keys saved by `/grab` and the `grab_api_key` tool. Values stay in the Keychain;
+/// this list shows names and dates only, with Copy and Delete.
+private struct GrabbedKeysSection: View {
+    @AppStorage(SecretVault.autoClearKey) private var autoClear = false
+    @State private var items: [SecretVault.Item] = []
+    @State private var copied: String?
+
+    var body: some View {
+        Section("API keys grabbed by Luna") {
+            if items.isEmpty {
+                Text("None yet. Type /grab followed by a service (e.g. /grab openai) in the AI panel.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            ForEach(items) { item in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(item.account)
+                        if let created = item.created {
+                            Text(created.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if copied == item.account { Text("Copied").font(.caption).foregroundStyle(.secondary) }
+                    Button("Copy") { if SecretVault.shared.copy(account: item.account) { copied = item.account } }
+                    Button("Delete", role: .destructive) {
+                        SecretVault.shared.delete(account: item.account)
+                        reload()
+                    }
+                }
+            }
+            Toggle("Clear the clipboard \(Int(SecretVault.autoClearSeconds)) s after copying a key", isOn: $autoClear)
+            Text("Saved in Keychain Access under “\(SecretVault.defaultService)”. The agent and outside agents never see the values.")
+                .font(.callout).foregroundStyle(.secondary)
+        }
+        .onAppear(perform: reload)
+    }
+
+    private func reload() { items = SecretVault.shared.items() }
+}
+
 /// "Connect agents": Luna's loopback MCP server for Claude Code, Codex and other MCP clients.
 private struct ConnectAgentsSection: View {
     @AppStorage(LunaMCPBridge.enabledKey) private var enabled = false
@@ -207,7 +249,7 @@ private struct ConnectAgentsSection: View {
                 Button("Regenerate token", role: .destructive) { confirmRegenerate = true }
                 if let copied { Text("Copied \(copied).").font(.callout).foregroundStyle(.secondary) }
             }
-            Text("Outside agents get the same tools as /agent: tabs, navigate, snapshot, click, type, select, scroll, read and run_task. Luna listens on 127.0.0.1 only and asks before an agent navigates, types, clicks or runs a task, once per agent session. For Codex, paste the config into ~/.codex/config.toml and set LUNA_MCP_TOKEN with the token export.")
+            Text("Outside agents get the same tools as /agent: tabs, navigate, snapshot, click, type, select, scroll, read, run_task and grab_api_key. Luna listens on 127.0.0.1 only and asks before an agent navigates, types, clicks or runs a task, once per agent session. For Codex, paste the config into ~/.codex/config.toml and set LUNA_MCP_TOKEN with the token export.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

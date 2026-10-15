@@ -141,7 +141,7 @@ final class MCPBridgeTests: XCTestCase {
         guard case .array(let tools)? = list["result"]?["tools"] else { return XCTFail("no tools") }
         let names = Set(tools.compactMap { $0["name"]?.stringValue })
         XCTAssertEqual(names, ["tabs_list", "tab_open", "tab_select", "navigate", "snapshot", "click", "type",
-                               "select", "scroll", "read", "run_task"])
+                               "select", "scroll", "read", "run_task", "grab_api_key"])
         let navigate = tools.first { $0["name"] == "navigate" }
         XCTAssertEqual(navigate?["inputSchema"]?["required"], .array(["url"]))
 
