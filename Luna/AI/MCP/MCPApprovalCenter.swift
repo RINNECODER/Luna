@@ -14,7 +14,19 @@ final class MCPApprovalCenter {
         let tool: String
         let detail: String
 
-        var title: String { "\(client) wants to \(tool.replacingOccurrences(of: "_", with: " "))" }
+        /// Customization tools show a change preview with Apply / Cancel.
+        var isPreview: Bool { PersonalizationTools.previewNames.contains(tool) }
+
+        var title: String {
+            if isPreview { return "\(client) proposes: \(Self.previewTitles[tool] ?? "a change")" }
+            return "\(client) wants to \(tool.replacingOccurrences(of: "_", with: " "))"
+        }
+
+        static let previewTitles = [
+            "settings_set": "change Luna settings", "tabs_group": "group tabs", "tabs_reorder": "reorder tabs",
+            "tab_pin": "pin a tab", "favorites_add": "add a favorite", "bookmarks_add": "add a bookmark",
+            "undo_change": "undo a change",
+        ]
     }
 
     private(set) var pending: [Request] = []

@@ -20,6 +20,12 @@ protocol AgentBrowserHost: AnyObject {
     func openTab(url: URL) -> UUID
     func selectTab(_ id: UUID)
     func navigate(_ tab: UUID, to url: URL)
+    /// The profile's usage record, history, bookmarks and workspace, for the personalization tools.
+    var personalization: PersonalizationContext? { get }
+}
+
+extension AgentBrowserHost {
+    var personalization: PersonalizationContext? { nil }
 }
 
 enum LunaToolError: LocalizedError, Equatable {
@@ -43,7 +49,7 @@ struct LunaToolResult: Equatable {
 
 /// One parameter of a tool. The JSON Schema and argument validation both come from these.
 struct LunaToolParam {
-    enum Kind: String { case string, integer }
+    enum Kind: String { case string, integer, boolean, array }
     let name: String
     let kind: Kind
     let description: String
@@ -52,6 +58,8 @@ struct LunaToolParam {
     var allowsEmpty = false
     var allowed: [String]? = nil
     var range: ClosedRange<Int>? = nil
+    /// JSON Schema of an array's items.
+    var items: JSONValue? = nil
 }
 
 /// A tool callable by Luna's own agent panel and, over MCP, by outside agents.
@@ -63,6 +71,11 @@ struct LunaTool {
     let mutates: Bool
     /// Adds an optional `tab_id` parameter; `LunaToolCall.tab()` resolves it.
     var targetsTab = true
+    /// Asks every time, even for trusted agents and "Allow for Session": the user sees a
+    /// preview of the change with Apply / Cancel (customization tools).
+    var confirmsEveryCall = false
+    /// What the approval card shows instead of the raw arguments (e.g. "Toolbar: Off → On").
+    var preview: ((LunaToolCall) -> String)? = nil
     let run: (LunaToolCall) async throws -> String
 
     static let tabParam = LunaToolParam(name: "tab_id", kind: .string,
@@ -76,6 +89,7 @@ struct LunaTool {
         for p in allParams {
             var prop: [String: JSONValue] = ["type": .string(p.kind.rawValue), "description": .string(p.description)]
             if let allowed = p.allowed { prop["enum"] = .array(allowed.map(JSONValue.string)) }
+            if let items = p.items { prop["items"] = items }
             if let range = p.range {
                 prop["minimum"] = .number(Double(range.lowerBound))
                 prop["maximum"] = .number(Double(range.upperBound))
@@ -119,6 +133,17 @@ struct LunaTool {
                 if let range = p.range, !range.contains(Int(n)) {
                     throw LunaToolError.invalidArguments("\(name): '\(p.name)' must be \(range.lowerBound)–\(range.upperBound).")
                 }
+            case .boolean:
+                guard case .bool = value else {
+                    throw LunaToolError.invalidArguments("\(name): '\(p.name)' must be true or false.")
+                }
+            case .array:
+                guard case .array(let items) = value else {
+                    throw LunaToolError.invalidArguments("\(name): '\(p.name)' must be a list.")
+                }
+                if p.required, items.isEmpty {
+                    throw LunaToolError.invalidArguments("\(name): '\(p.name)' must not be empty.")
+                }
             }
         }
     }
@@ -128,8 +153,11 @@ struct LunaTool {
 struct LunaToolCall {
     let arguments: [String: JSONValue]
     let host: AgentBrowserHost
+    /// Who is calling: "Luna" or the MCP client's name (shown in Recent AI changes).
+    var source = "Luna"
 
     func string(_ key: String) -> String? { arguments[key]?.stringValue }
+    func bool(_ key: String) -> Bool? { if case .bool(let b)? = arguments[key] { return b }; return nil }
     func int(_ key: String) -> Int? { arguments[key]?.numberValue.map { Int($0) } }
 
     /// The `tab_id` tab (brought to the front) or the active tab.
@@ -179,14 +207,20 @@ final class LunaToolbox {
 
     func tool(named name: String) -> LunaTool? { tools.first { $0.name == name } }
 
+    /// The approval card's text for a call: the tool's own preview, when it has one.
+    func preview(_ name: String, arguments: [String: JSONValue]) -> String? {
+        guard let tool = tool(named: name), let preview = tool.preview, let host = hostProvider() else { return nil }
+        return AgentRedaction.redact(preview(LunaToolCall(arguments: arguments, host: host)))
+    }
+
     /// Runs a tool. Unknown names throw; bad arguments and tool failures come back as
     /// `isError` results so a model can correct itself. All output is redacted here.
-    func call(_ name: String, arguments: [String: JSONValue]) async throws -> LunaToolResult {
+    func call(_ name: String, arguments: [String: JSONValue], source: String = "Luna") async throws -> LunaToolResult {
         guard let tool = tool(named: name) else { throw LunaToolError.unknownTool(name) }
         do {
             try tool.validate(arguments)
             guard let host = hostProvider() else { throw LunaToolError.unavailable("No Luna browser window is open.") }
-            let text = try await tool.run(LunaToolCall(arguments: arguments, host: host))
+            let text = try await tool.run(LunaToolCall(arguments: arguments, host: host, source: source))
             return LunaToolResult(text: AgentRedaction.redact(text), isError: false)
         } catch {
             return LunaToolResult(text: AgentRedaction.redact(error.localizedDescription), isError: true)
@@ -240,7 +274,7 @@ final class LunaToolbox {
 }
 
 /// Same rule as `CommandRouter`'s browser actions: http(s) with a host.
-func isSafeBrowserURL(_ url: URL) -> Bool {
+nonisolated func isSafeBrowserURL(_ url: URL) -> Bool {
     guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
     return url.host != nil
 }

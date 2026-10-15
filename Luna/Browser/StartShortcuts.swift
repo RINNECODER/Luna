@@ -16,12 +16,14 @@ enum StartPagePrefs {
 /// The user's shortcuts, shared across start pages.
 final class ShortcutStore: ObservableObject {
     static let shared = ShortcutStore()
-    private static let key = "luna_start_shortcuts"
+    static let key = "luna_start_shortcuts"
 
     @Published private(set) var shortcuts: [SiteShortcut]
+    private let defaults: UserDefaults
 
-    private init() {
-        if let data = UserDefaults.standard.data(forKey: Self.key),
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.key),
            let saved = try? JSONDecoder().decode([SiteShortcut].self, from: data) {
             shortcuts = saved
         } else {
@@ -32,6 +34,8 @@ final class ShortcutStore: ObservableObject {
     func add(_ s: SiteShortcut) { shortcuts.append(s); save() }
     func remove(_ id: UUID) { shortcuts.removeAll { $0.id == id }; save() }
     func removeAll() { shortcuts = []; save() }
+    /// Replaces the whole list (Personalization: settings changes and their undo).
+    func replaceAll(_ list: [SiteShortcut]) { shortcuts = list; save() }
 
     func update(_ s: SiteShortcut) {
         guard let i = shortcuts.firstIndex(where: { $0.id == s.id }) else { return }
@@ -40,17 +44,17 @@ final class ShortcutStore: ObservableObject {
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(shortcuts) { UserDefaults.standard.set(data, forKey: Self.key) }
+        if let data = try? JSONEncoder().encode(shortcuts) { defaults.set(data, forKey: Self.key) }
     }
 }
 
 extension SiteShortcut {
-    static func normalizedHost(_ host: String) -> String {
+    nonisolated static func normalizedHost(_ host: String) -> String {
         host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 
     /// "mail.google.com" → "Mail", "github.com" → "GitHub"-ish ("Github").
-    static func displayName(forHost host: String) -> String {
+    nonisolated static func displayName(forHost host: String) -> String {
         let parts = normalizedHost(host).split(separator: ".")
         let label = parts.count > 2 ? parts[parts.count - 3] : (parts.first ?? Substring(host))
         return label.prefix(1).uppercased() + label.dropFirst()

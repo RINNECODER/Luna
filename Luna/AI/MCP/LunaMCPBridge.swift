@@ -168,6 +168,17 @@ final class LunaBrowserHosts {
         let front = NSApp.orderedWindows.lazy.compactMap { w in self.entries.first { $0.window === w } }.first
         return (front ?? entries.last).map { ProfileSessionHost(session: $0.session()) }
     }
+
+    /// A profile's stores, using an open window's workspace when one shows that profile.
+    func personalization(for profileId: UUID) -> PersonalizationContext? {
+        entries.removeAll { $0.window == nil }
+        if let session = entries.lazy.map({ $0.session() }).first(where: { $0.profileId == profileId }) {
+            return ProfileSessionHost(session: session).personalization
+        }
+        let history = ProfileStoreRegistry.stores(for: profileId).history
+        return PersonalizationContext(profileId: profileId, usage: .forProfile(profileId), history: { history.historyEvents },
+                                      bookmarks: .forProfile(profileId), workspace: nil)
+    }
 }
 
 /// Adapts one window's profile session (workspace + web views) to the tools.
@@ -213,6 +224,13 @@ final class ProfileSessionHost: AgentBrowserHost {
         session.tabManager.navigate(tab: tab, to: url)
         session.webViewWrapper.load(url: url, in: tab)
     }
+
+    var personalization: PersonalizationContext? {
+        let history = session.historyManager
+        return PersonalizationContext(profileId: session.profileId, usage: .forProfile(session.profileId),
+                                      history: { history.historyEvents }, bookmarks: .forProfile(session.profileId),
+                                      workspace: session.workspace)
+    }
 }
 
 // MARK: - Approval
@@ -230,13 +248,22 @@ final class MCPApprovalPrompt: MCPApproving {
             return decision
         }
         let alert = NSAlert()
-        alert.messageText = "\(client) wants to use Luna: \(tool.replacingOccurrences(of: "_", with: " "))"
-        alert.informativeText = (detail.isEmpty ? "" : detail + "\n\n") +
-            "Allow for This Session lets this agent act without asking until it disconnects."
-        alert.addButton(withTitle: "Allow Once")
-        alert.addButton(withTitle: "Allow for This Session")
-        let deny = alert.addButton(withTitle: "Deny")
-        deny.keyEquivalent = "\u{1b}"
+        let preview = PersonalizationTools.previewNames.contains(tool)
+        if preview {
+            // Customizations: the change itself, Apply or Cancel; never allowed for a whole session.
+            alert.messageText = MCPApprovalCenter.Request(client: client, tool: tool, detail: detail).title
+            alert.informativeText = detail
+            alert.addButton(withTitle: "Apply")
+            alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        } else {
+            alert.messageText = "\(client) wants to use Luna: \(tool.replacingOccurrences(of: "_", with: " "))"
+            alert.informativeText = (detail.isEmpty ? "" : detail + "\n\n") +
+                "Allow for This Session lets this agent act without asking until it disconnects."
+            alert.addButton(withTitle: "Allow Once")
+            alert.addButton(withTitle: "Allow for This Session")
+            let deny = alert.addButton(withTitle: "Deny")
+            deny.keyEquivalent = "\u{1b}"
+        }
         NSApp.activate()
 
         let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.orderedWindows.first { $0.isVisible }
@@ -254,7 +281,7 @@ final class MCPApprovalPrompt: MCPApproving {
         }
         switch response {
         case .alertFirstButtonReturn: return .once
-        case .alertSecondButtonReturn: return .session
+        case .alertSecondButtonReturn: return preview ? .deny : .session
         default: return .deny
         }
     }
