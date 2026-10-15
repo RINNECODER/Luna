@@ -880,9 +880,11 @@ struct SmartSearchView: View {
     // MARK: - URL detection + typo correction
 
     private func resolveAsURL(_ input: String) -> URL? {
-        let lower = input.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        // Keep the original case: URL paths are case-sensitive (e.g. GitHub Pages /Luna/).
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
         if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
-            return URL(string: lower)
+            return URL(string: trimmed)
         }
 
         let tlds: Set<String> = [
@@ -894,7 +896,7 @@ struct SmartSearchView: View {
         if parts.count >= 2, let lastPart = parts.last {
             let tldCandidate = lastPart.components(separatedBy: "/").first ?? lastPart
             if tlds.contains(tldCandidate) {
-                let corrected = correctURLTypos(lower)
+                let corrected = correctURLTypos(trimmed)
                 return URL(string: "https://\(corrected)")
             }
         }
@@ -935,7 +937,7 @@ struct SmartSearchView: View {
         let domainPart = String(result[result.startIndex..<dotIndex])
         let rest = String(result[dotIndex...])
 
-        if let corrected = corrections[domainPart] {
+        if let corrected = corrections[domainPart.lowercased()] {
             result = corrected + rest
         }
         return result

@@ -1190,6 +1190,11 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         DownloadManager.shared.addDownload(url: requestURL, fileURL: info.fileURL, suggestedFilename: info.suggestedFilename)
     }
 
+    func download(_ download: WKDownload, didFailWithError error: any Error, resumeData: Data?) {
+        let info = downloadDestinationByID.removeValue(forKey: ObjectIdentifier(download))
+        print("WebViewWrapper: Download failed:", info?.fileURL.path ?? "(no destination)", error.localizedDescription)
+    }
+
     // MARK: - WKUIDelegate
 
     /// Handle `target="_blank"` / `window.open()` by creating a new tab *and returning a real WKWebView*.
