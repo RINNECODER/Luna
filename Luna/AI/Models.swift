@@ -31,14 +31,17 @@ struct ChatMessage: Identifiable, Codable {
     let timestamp: Date
     let pageURL: String?
     let pageTitle: String?
+    /// A run or key-grab card rendered instead of the text (the text stays as a plain summary).
+    var card: ChatCard?
 
     enum Role: String, Codable {
         case user
         case assistant
     }
     
-    init(id: UUID = UUID(), role: Role, text: String, timestamp: Date = Date(), pageURL: String? = nil, pageTitle: String? = nil) {
+    init(id: UUID = UUID(), role: Role, text: String, timestamp: Date = Date(), pageURL: String? = nil, pageTitle: String? = nil, card: ChatCard? = nil) {
         self.id = id
+        self.card = card
         self.role = role
         self.text = text
         self.timestamp = timestamp

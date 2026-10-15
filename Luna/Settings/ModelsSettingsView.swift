@@ -81,7 +81,7 @@ private struct ChatGPTSection: View {
         if auth.isSignedIn {
             Section("Model") {
                 ModelPicker(selection: $model) {
-                    try await OpenAIResponsesClient(credential: .chatGPT).listModels().map { ($0.id, $0.displayName) }
+                    try await ModelCatalog.load(.chatgpt)
                 }
             }
         }
@@ -103,7 +103,7 @@ private struct AnthropicSection: View {
         }
         Section("Model") {
             ModelPicker(selection: $model) {
-                try await AnthropicClient().listModels().map { ($0.id, $0.displayName) }
+                try await ModelCatalog.load(.anthropic)
             }
         }
     }
@@ -119,7 +119,7 @@ private struct OpenAISection: View {
         }
         Section("Model") {
             ModelPicker(selection: $model) {
-                try await OpenAIResponsesClient(credential: .apiKey).listModels().map { ($0.id, $0.displayName) }
+                try await ModelCatalog.load(.openai)
             }
         }
     }
@@ -143,11 +143,7 @@ private struct OllamaSection: View {
             TextField("Server", text: $baseURL, prompt: Text("http://127.0.0.1:11434"))
                 .autocorrectionDisabled()
             ModelPicker(selection: $model) {
-                try await withCheckedThrowingContinuation { cont in
-                    OllamaClient().listModels(baseURLString: baseURL) { result in
-                        cont.resume(with: result.map { $0.sorted().map { ($0, $0) } })
-                    }
-                }
+                try await ModelCatalog.load(.ollama)
             }
             .id(baseURL)
         }
@@ -170,7 +166,7 @@ private struct ComputerUseSection: View {
                 }
                 return try await JevClient.listModels(apiKey: key)
             }
-            Text("Type /agent followed by a goal in the AI panel to let Luna operate the current tab. With a TypeSafe key, Jev picks each step; without one, the model above does. Typed values always come from the model above.")
+            Text("Choose Agent in the AI panel composer (or type /agent and a goal) to let Luna operate the current tab. With a TypeSafe key, Jev picks each step; without one, your chat model does and also writes any typed values.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -187,7 +183,7 @@ private struct GrabbedKeysSection: View {
     var body: some View {
         Section("API keys grabbed by Luna") {
             if items.isEmpty {
-                Text("None yet. Type /grab followed by a service (e.g. /grab openai) in the AI panel.")
+                Text("None yet. Choose Grab key in the AI panel composer and pick a service.")
                     .font(.callout).foregroundStyle(.secondary)
             }
             ForEach(items) { item in

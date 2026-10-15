@@ -29,6 +29,10 @@ struct CommandSurfaceView: View {
     @AppStorage("luma_ai_provider") private var aiProviderRaw: String = AIProvider.gemini.rawValue
     @AppStorage("luma_ollama_base_url") private var ollamaBaseURL: String = "http://127.0.0.1:11434"
     @AppStorage("luma_ollama_model") private var ollamaModel: String = ""
+    @AppStorage(DevPrefs.panelModeKey) private var panelModeRaw: String = AIPanelMode.general.rawValue
+    @AppStorage(DevPrefs.terminalKey) private var devTerminal: Bool = false
+    @Environment(\.openSettings) private var openSettings
+    @Environment(\.colorScheme) private var windowColorScheme
     @State private var inputText: String = ""
     @State private var errorMessage: String? = nil
     @State private var isSending: Bool = false
@@ -41,7 +45,8 @@ struct CommandSurfaceView: View {
     /// their captured generation against this and bail out.
     @State private var streamGeneration: Int = 0
     /// A `/grab` paused on a sign-in page; Resume runs it again.
-    @State private var pendingGrab: (service: KeyService, keyName: String)? = nil
+    @State private var composerMode: ComposerMode = .chat
+    @AppStorage("luna_grab_service") private var grabServiceID: String = KeyService.registry[0].id
     @FocusState private var isInputFocused: Bool
 
     @State private var pageTitle: String? = nil
@@ -72,12 +77,21 @@ struct CommandSurfaceView: View {
     var body: some View {
         VStack(spacing: 0) {
             panelHeader()
-            conversationStream()
-            inputArea()
+            if DevMode.isDevBuild { modeSwitch() }
+            if isDevMode {
+                DevPanelView(fontSize: chatFontSize, onOpenSettings: openConnectAgents)
+            } else {
+                conversationStream()
+                MCPApprovalStack()
+                inputArea()
+            }
         }
         // No surface of its own: the panel sits on the window chrome, like the
         // sidebar, so the browser, the page and the panel read as one piece.
         .environment(\.colorScheme, .dark)
+        // The panel's type is light-on-dark; on light window chrome it gets the start page's
+        // dark backdrop so it stays readable.
+        .background { if windowColorScheme == .light { ChatSurfaceBackground() } }
         .overlay { if isDropTargeted { FileDropHint() } }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
             handleDocumentDrop(providers: providers)
@@ -85,6 +99,15 @@ struct CommandSurfaceView: View {
         // Load page context only when the sidebar is toggled open (not on every URL change).
         // Auto-reloading on navigation can look like automated scraping to strict sites (e.g. Akamai).
         .onAppear {
+            MCPApprovalCenter.shared.panelAppeared()
+            #if DEBUG
+            if let mode = ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_COMPOSER"].flatMap(ComposerMode.init(rawValue:)) {
+                composerMode = mode
+            }
+            if let text = ProcessInfo.processInfo.environment["LUNA_SNAPSHOT_SEND"] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { inputText = text; sendCommand() }
+            }
+            #endif
             restoreConversationSummary()
             loadPageContext()
             includeSplitPeers()
@@ -93,6 +116,8 @@ struct CommandSurfaceView: View {
         // Parent can remove the panel (tab switch / close) without calling close();
         // cancel the stream so orphaned tasks don't keep mutating state.
         .onDisappear {
+            MCPApprovalCenter.shared.panelDisappeared()
+            if isSending { stopStreaming() }
             streamGeneration += 1
             streamingTask?.cancel()
             streamingTask = nil
@@ -115,36 +140,81 @@ struct CommandSurfaceView: View {
         }
     }
 
-    // MARK: - Header (minimal - note icon for new chat, close button)
+    // MARK: - Header (minimal - note icon for new chat, model menu, close button)
 
     private func panelHeader() -> some View {
         HStack(spacing: 6) {
-            PanelIconButton(systemName: "square.and.pencil", help: "New Chat", action: startNewChat)
+            PanelIconButton(systemName: "square.and.pencil", help: isDevMode ? "New Session" : "New Chat",
+                            action: startNewChat)
             Spacer(minLength: 0)
             VStack(spacing: 1) {
                 Text("Luna")
                     .font(LunaType.brand(size: 15))
-                Text(modelLabel)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if isDevMode {
+                    Text("Dev · coding agents")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                } else {
+                    PanelModelMenu(onOpenSettings: openModelSettings)
+                }
             }
             Spacer(minLength: 0)
-            PanelIconButton(systemName: "xmark", help: "Close (Esc)", action: close)
-                .keyboardShortcut(.escape, modifiers: [])
+            PanelIconButton(systemName: "xmark", help: "Close (Esc)") {
+                // Esc stops a running reply, agent run or Dev turn before it closes the panel.
+                if isDevMode, DevSessionController.shared.thread?.isTurnActive == true {
+                    DevSessionController.shared.interrupt()
+                } else if !isDevMode, isSending {
+                    stopStreaming()
+                } else {
+                    close()
+                }
+            }
+            // The raw terminal needs Esc (it interrupts the CLI).
+            .keyboardShortcut(isDevMode && devTerminal ? nil : KeyboardShortcut(.escape, modifiers: []))
         }
         .padding(.horizontal, 10)
         .padding(.top, 10)
         .padding(.bottom, 8)
     }
 
-    private var modelLabel: String {
-        let service = LLMService.shared
-        let model = service.modelName
-        return model.isEmpty ? service.provider.displayName : "\(service.provider.displayName) · \(model)"
+    /// Dev mode only exists in the Luna Dev build, and only works unsandboxed.
+    private var isDevMode: Bool {
+        DevMode.isDevBuild && DevMode.isAvailable && panelModeRaw == AIPanelMode.dev.rawValue
+    }
+
+    /// General | Dev, like a chat / work toggle. Shown only in the Luna Dev build.
+    private func modeSwitch() -> some View {
+        VStack(spacing: 4) {
+            Picker("Mode", selection: $panelModeRaw) {
+                Text("General").tag(AIPanelMode.general.rawValue)
+                Text("Dev").tag(AIPanelMode.dev.rawValue)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 180)
+            .disabled(!DevMode.isAvailable)
+            .accessibilityLabel("Panel mode")
+            if !DevMode.isAvailable {
+                Text("Dev needs the unsandboxed Luna Dev build.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.bottom, 8)
+    }
+
+    private func openConnectAgents() {
+        SettingsRouter.shared.requestedPane = .ai
+        openSettings()
+    }
+
+    private func openModelSettings() {
+        SettingsRouter.shared.requestedPane = .ai
+        openSettings()
     }
 
     private func startNewChat() {
+        if isDevMode { DevSessionController.shared.stop(); return }
         streamingTask?.cancel()
         streamingTask = nil
         isSending = false
@@ -158,6 +228,7 @@ struct CommandSurfaceView: View {
         actionProposedMessage = nil
         conversationSummary = nil
         lastSummarizedMessageCount = 0
+        composerMode = .chat
         editorContentHeight = minInputHeight
         loadPageContext() // Reload current page context
     }
@@ -178,43 +249,35 @@ struct CommandSurfaceView: View {
                         emptyConversationState()
                     } else {
                         ForEach(messages) { msg in
-                            LunaChatBubble(
+                            PanelMessageRow(
                                 message: msg,
-                                isUser: msg.role == .user,
                                 fontSize: chatFontSize,
-                                onLinkTapped: { url in openLinkInNewTab(url) }
+                                onLinkTapped: { url in openLinkInNewTab(url) },
+                                onStopRun: stopStreaming,
+                                onResumeGrab: resumeGrab,
+                                onDismissGrab: { dismissGrab(id: msg.id) },
+                                isLastMessage: msg.id == messages.last?.id
                             )
                             .id(msg.id)
                             .frame(maxWidth: ChatTokens.chatMaxWidth, alignment: msg.role == .user ? .trailing : .leading)
                         }
-                        if isSending {
+                        if isSending, messages.last?.card == nil {
                             loadingIndicator()
                         }
-                        if let err = errorMessage {
-                            errorInlineView(message: err)
-                        }
-                        if let grab = pendingGrab, !isSending {
-                            HStack(spacing: 8) {
-                                Text("Sign in to \(grab.service.name) in this tab, then resume.")
-                                    .font(.callout).foregroundStyle(.secondary)
-                                Button("Resume") { runGrab(service: grab.service, keyName: grab.keyName, command: nil) }
-                                Button("Cancel") { pendingGrab = nil }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
                     }
+                    if let err = errorMessage {
+                        errorInlineView(message: err)
+                    }
+                    Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
             }
             .frame(maxHeight: .infinity)
             .onChange(of: messages.count) { _, _ in
-                if let last = messages.last {
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
-                }
+                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
+            .onChange(of: messages.last?.card) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
         }
         .background(Color.clear)
         .accessibilityElement(children: .contain)
@@ -223,40 +286,28 @@ struct CommandSurfaceView: View {
 
     /// Mirrors the start page: the moon, a quiet title, and capsule suggestions.
     private func emptyConversationState() -> some View {
-        VStack(spacing: 0) {
-            AsciiMoon(diameter: 92, isBusy: isSending)
-                .padding(.bottom, 2)
-            Text("Ask about this page")
-                .font(LunaType.brand(size: 22))
-                .foregroundStyle(Color.white.opacity(0.92))
-                .padding(.bottom, 8)
-            Text("Summarize, explain, or find anything, with this page and any tabs or files you add as context.")
-                .font(.system(size: 12))
-                .foregroundColor(ChatTokens.textTertiary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 250)
-            VStack(spacing: 6) {
-                ForEach(["Summarize this page", "What are the key takeaways?", "Explain this simply"], id: \.self) { suggestion in
-                    Button {
-                        inputText = suggestion
-                        sendCommand()
-                    } label: {
-                        Text(suggestion)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(ChatTokens.textSecondary)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .overlay(Capsule(style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.top, 18)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 36)
-        .accessibilityElement(children: .contain)
+        ChatEmptyState(
+            title: "Ask about this page",
+            subtitle: "Summarize, explain, or find anything — or let Luna do a task on this tab.",
+            suggestions: [
+                .init(title: "Summarize this page") { send("Summarize this page") },
+                .init(title: "What are the key takeaways?") { send("What are the key takeaways?") },
+                .init(title: "Do a task on this tab…") { setMode(.agent) },
+                .init(title: "Get an API key…") { setMode(.grab) },
+            ],
+            isBusy: isSending
+        )
+    }
+
+    private func send(_ text: String) {
+        composerMode = .chat
+        inputText = text
+        sendCommand()
+    }
+
+    private func setMode(_ mode: ComposerMode) {
+        composerMode = mode
+        isInputFocused = true
     }
 
     private func loadingIndicator() -> some View {
@@ -274,6 +325,47 @@ struct CommandSurfaceView: View {
     //
     // Glass rounded-rect box (start page style). Grows to show all typed text.
     // No internal scrolling — you always see everything before sending.
+    // The mode button on the left switches between Chat, Agent and Grab key.
+
+    enum ComposerMode: String, CaseIterable {
+        case chat, agent, grab
+
+        var title: String {
+            switch self {
+            case .chat: return "Chat"
+            case .agent: return "Agent"
+            case .grab: return "Grab Key"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .chat: return "bubble.left"
+            case .agent: return "cursorarrow.rays"
+            case .grab: return "key"
+            }
+        }
+
+        var detail: String {
+            switch self {
+            case .chat: return "Ask about this page"
+            case .agent: return "Do a task on this tab  /agent"
+            case .grab: return "Create an API key into the Keychain  /grab"
+            }
+        }
+
+        var placeholder: String {
+            switch self {
+            case .chat: return "Ask anything…"
+            case .agent: return "Describe a task for this tab…"
+            case .grab: return "Key name (optional)"
+            }
+        }
+    }
+
+    private var grabService: KeyService {
+        KeyService.registry.first { $0.id == grabServiceID } ?? KeyService.registry[0]
+    }
 
     private func inputArea() -> some View {
         VStack(spacing: 6) {
@@ -284,61 +376,53 @@ struct CommandSurfaceView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
             }
-            // Context chips
-            if includeCurrentTab || !includedOtherTabIds.isEmpty || !attachedDocuments.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        if includeCurrentTab {
-                            ContextChip(kind: .page(url: webViewWrapper.currentURL, faviconURL: tabId.flatMap { webViewWrapper.faviconURLByTab[$0] ?? nil }),
-                                        title: thisPageLabel(),
-                                        onRemove: { includeCurrentTab = false })
-                        }
-                        ForEach(includedOtherTabIds, id: \.self) { otherId in
-                            ContextChip(kind: .tab(url: webViewWrapper.tabManager?.tabURL[otherId] ?? nil,
-                                                   faviconURL: webViewWrapper.faviconURLByTab[otherId] ?? nil),
-                                        title: otherTabLabel(tabId: otherId),
-                                        onRemove: { removeIncludedOtherTab(id: otherId) })
-                        }
-                        ForEach(attachedDocuments) { doc in
-                            ContextChip(kind: .document(filename: doc.displayName),
-                                        title: doc.displayName,
-                                        onRemove: { removeAttachedDocument(id: doc.id) })
-                        }
-                    }
-                    .padding(.horizontal, 14)
+            switch composerMode {
+            case .chat:
+                if includeCurrentTab || !includedOtherTabIds.isEmpty || !attachedDocuments.isEmpty {
+                    contextChips()
                 }
-                .frame(height: 28)
+            case .agent:
+                modeHint("Runs on this tab · \(agentModelLabel)")
+            case .grab:
+                grabServiceRow()
             }
 
-            HStack(alignment: .bottom, spacing: 4) {
-                ChatAddContextButton(isActive: addContextPresented) { addContextPresented.toggle() }
-                .popover(isPresented: $addContextPresented, arrowEdge: .top) {
-                    AddContextPopover(
-                        tabs: otherTabItems,
-                        included: Set(includedOtherTabIds),
-                        onToggleTab: toggleIncludedTab,
-                        onChooseFiles: {
-                            addContextPresented = false
-                            documentPickerPresented = true
-                        }
-                    )
+            HStack(alignment: .bottom, spacing: 2) {
+                modeMenu()
+                    .padding(.bottom, 3)
+                if composerMode == .chat {
+                    ChatAddContextButton(isActive: addContextPresented) { addContextPresented.toggle() }
+                    .popover(isPresented: $addContextPresented, arrowEdge: .top) {
+                        AddContextPopover(
+                            tabs: otherTabItems,
+                            included: Set(includedOtherTabIds),
+                            onToggleTab: toggleIncludedTab,
+                            onChooseFiles: {
+                                addContextPresented = false
+                                documentPickerPresented = true
+                            }
+                        )
+                    }
+                    .padding(.bottom, 3)
                 }
-                .padding(.bottom, 3)
 
-                GrowingTextEditor(
+                PanelTextEditor(
                     text: $inputText,
-                    placeholder: "Ask anything…",
+                    placeholder: composerMode == .grab ? "Key name (default \(KeyGrabber.defaultKeyName()))"
+                                                       : composerMode.placeholder,
                     minHeight: minInputHeight,
                     fontSize: chatFontSize,
                     isFocused: $isInputFocused,
                     onSubmit: sendCommand,
-                    reportedHeight: $editorContentHeight
+                    reportedHeight: $editorContentHeight,
+                    onArrowUpWhenEmpty: editLastMessage,
+                    accessibilityLabel: composerMode.placeholder
                 )
                 .frame(maxWidth: .infinity)
 
                 ChatSendStopButton(
                     isSending: isSending,
-                    canSend: !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    canSend: composerMode == .grab || !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                     onSend: sendCommand,
                     onStop: stopStreaming
                 )
@@ -353,6 +437,108 @@ struct CommandSurfaceView: View {
             .padding(.bottom, 12)
         }
         .padding(.top, 4)
+    }
+
+    private func contextChips() -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if includeCurrentTab {
+                    ContextChip(kind: .page(url: webViewWrapper.currentURL, faviconURL: tabId.flatMap { webViewWrapper.faviconURLByTab[$0] ?? nil }),
+                                title: thisPageLabel(),
+                                onRemove: { includeCurrentTab = false })
+                }
+                ForEach(includedOtherTabIds, id: \.self) { otherId in
+                    ContextChip(kind: .tab(url: webViewWrapper.tabManager?.tabURL[otherId] ?? nil,
+                                           faviconURL: webViewWrapper.faviconURLByTab[otherId] ?? nil),
+                                title: otherTabLabel(tabId: otherId),
+                                onRemove: { removeIncludedOtherTab(id: otherId) })
+                }
+                ForEach(attachedDocuments) { doc in
+                    ContextChip(kind: .document(filename: doc.displayName),
+                                title: doc.displayName,
+                                onRemove: { removeAttachedDocument(id: doc.id) })
+                }
+            }
+            .padding(.horizontal, 14)
+        }
+        .frame(height: 28)
+    }
+
+    /// One quiet line above the composer for the Agent mode.
+    private func modeHint(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: composerMode.systemImage).font(.system(size: 10.5))
+            Text(text).font(.system(size: 11)).lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .foregroundColor(ChatTokens.textTertiary)
+        .padding(.horizontal, 18)
+        .frame(height: 22)
+    }
+
+    /// Chat / Agent / Grab key. Same circle as the "+" button; the icon shows the mode.
+    private func modeMenu() -> some View {
+        Menu {
+            Picker("Mode", selection: Binding(get: { composerMode }, set: { setMode($0) })) {
+                ForEach(ComposerMode.allCases, id: \.self) { mode in
+                    Label {
+                        Text(mode.title)
+                        Text(mode.detail)
+                    } icon: {
+                        Image(systemName: mode.systemImage)
+                    }
+                    .tag(mode)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+        } label: {
+            Image(systemName: composerMode.systemImage)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(composerMode == .chat ? ChatTokens.textSecondary : ChatTokens.accent)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(Color.white.opacity(composerMode == .chat ? 0 : 0.12)))
+                .contentShape(Circle())
+        }
+        .chatMenuStyle()
+        .disabled(isSending)
+        .help("Mode: \(composerMode.title) — chat, run an agent task, or grab an API key")
+        .accessibilityLabel("Mode: \(composerMode.title)")
+    }
+
+    private func grabServiceRow() -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "key").font(.system(size: 10.5))
+                .foregroundColor(ChatTokens.textTertiary)
+            Text("Get an API key from")
+                .font(.system(size: 11))
+                .foregroundColor(ChatTokens.textTertiary)
+            Menu {
+                Picker("Service", selection: $grabServiceID) {
+                    ForEach(KeyService.registry, id: \.id) { Text($0.name).tag($0.id) }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+            } label: {
+                ChatMenuLabel(text: grabService.name)
+            }
+            .chatMenuStyle()
+            .help("Service")
+            .accessibilityLabel("Service: \(grabService.name)")
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 18)
+        .frame(height: 26)
+    }
+
+    private var agentModelLabel: String {
+        KeyGrabber.defaultPolicy() is JevPolicy ? JevClient.configuredModel : LLMService.shared.modelName
+    }
+
+    /// ↑ in an empty composer puts the last message you sent back in it.
+    private func editLastMessage() {
+        guard !isSending, let last = messages.last(where: { $0.role == .user && $0.card == nil }) else { return }
+        inputText = last.text
     }
 
     /// Open tabs other than this one, for the "+" popover.
@@ -554,10 +740,23 @@ struct CommandSurfaceView: View {
         // A send while a stream is active would corrupt message indices; require Stop first.
         guard !isSending else { return }
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if composerMode == .grab {
+            runGrab(service: grabService, keyName: trimmed.isEmpty ? KeyGrabber.defaultKeyName() : trimmed)
+            return
+        }
         guard !trimmed.isEmpty else { return }
 
+        // Slash commands stay as shortcuts for the composer modes.
+        let lower = trimmed.lowercased()
+        if lower == "/agent" { inputText = ""; setMode(.agent); return }
+        if lower == "/grab" { inputText = ""; setMode(.grab); return }
+        if composerMode == .agent {
+            runAgent(goal: trimmed)
+            return
+        }
         if let goal = Self.agentGoal(in: trimmed) {
-            runAgent(goal: goal, command: trimmed)
+            runAgent(goal: goal)
             return
         }
         if let grab = Self.grabRequest(in: trimmed) {
@@ -565,7 +764,7 @@ struct CommandSurfaceView: View {
                 errorMessage = "Usage: /grab <service> [key name]"
                 return
             }
-            runGrab(service: service, keyName: grab.keyName ?? KeyGrabber.defaultKeyName(), command: trimmed)
+            runGrab(service: service, keyName: grab.keyName ?? KeyGrabber.defaultKeyName())
             return
         }
 
@@ -616,68 +815,87 @@ struct CommandSurfaceView: View {
         return (words[0], words.count > 1 ? words[1...].joined(separator: " ") : nil)
     }
 
+    private var agentWebView: WKWebView? {
+        tabId.flatMap(webViewWrapper.webViewIfLoaded) ?? webViewWrapper.activeWebView
+    }
+
+    /// Applies `change` to the card of message `id` and keeps its plain-text summary in step.
+    private func updateCard(_ id: UUID, _ change: (inout ChatCard) -> Void) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }), var card = messages[idx].card else { return }
+        change(&card)
+        messages[idx].card = card
+        switch card {
+        case .agentRun(let run): messages[idx].text = run.transcript
+        case .grab(let grab): messages[idx].text = grab.transcript
+        }
+    }
+
     /// Runs the key grabber on this tab. The key goes to the Keychain and clipboard only;
-    /// the panel shows the agent's steps and where the key was saved, never the value.
-    private func runGrab(service: KeyService, keyName: String, command: String?) {
-        guard let webView = tabId.flatMap(webViewWrapper.webViewIfLoaded) ?? webViewWrapper.activeWebView else {
+    /// the card shows the agent's steps and where the key was saved, never the value.
+    private func runGrab(service: KeyService, keyName: String) {
+        guard let webView = agentWebView else {
             errorMessage = "Open a page in this tab first."
             return
         }
-        pendingGrab = nil
         isSending = true
         errorMessage = nil
-        if let command {
-            messages.append(ChatMessage(role: .user, text: command))
-            inputText = ""
-        }
-        let reply = ChatMessage(role: .assistant, text: "Getting a \(service.name) API key named “\(keyName)”…\n")
+        inputText = ""
+        let card = GrabCard(service: service, keyName: keyName, model: agentModelLabel)
+        let reply = ChatMessage(role: .assistant, text: card.transcript, card: .grab(card))
         messages.append(reply)
         let replyId = reply.id
         streamGeneration += 1
         let generation = streamGeneration
         streamingTask = Task {
-            let append: (String) -> Void = { line in
-                guard generation == streamGeneration,
-                      let idx = messages.firstIndex(where: { $0.id == replyId }) else { return }
-                messages[idx].text += "\n" + line
-            }
             let result = await KeyGrabber.shared.grab(service: service, keyName: keyName, webView: webView,
                                                       navigate: { webView.load(URLRequest(url: $0)) },
-                                                      onEvent: { if let line = $0.panelLine { append(line) } })
+                                                      onEvent: { event in
+                guard generation == streamGeneration else { return }
+                updateCard(replyId) { if case .grab(var g) = $0 { g.run.apply(event); $0 = .grab(g) } }
+            })
             guard generation == streamGeneration else { return }
-            append("\n**\(result.message)**")
-            if result.status == .waitingForSignIn { pendingGrab = (service, keyName) }
+            updateCard(replyId) { if case .grab(var g) = $0 { g.finish(result); $0 = .grab(g) } }
             isSending = false
             streamingTask = nil
         }
     }
 
-    /// Streams each agent step into one assistant message. Stop cancels the run.
-    private func runAgent(goal: String, command: String) {
-        guard let webView = tabId.flatMap(webViewWrapper.webViewIfLoaded) ?? webViewWrapper.activeWebView else {
+    private func resumeGrab(_ card: GrabCard) {
+        guard !isSending else { return }
+        let service = KeyService.registry.first { $0.id == card.serviceID } ?? KeyService.resolve(card.serviceName)
+        guard let service else { return }
+        runGrab(service: service, keyName: card.keyName)
+    }
+
+    private func dismissGrab(id: UUID) {
+        updateCard(id) {
+            if case .grab(var g) = $0 { g.status = .stopped; g.message = "Cancelled."; $0 = .grab(g) }
+        }
+    }
+
+    /// Streams each agent step into a run card. Stop cancels the run.
+    private func runAgent(goal: String) {
+        guard let webView = agentWebView else {
             errorMessage = "Open a page in this tab first."
             return
         }
         isSending = true
         errorMessage = nil
-        messages.append(ChatMessage(role: .user, text: command,
-                                    pageURL: webViewWrapper.currentURL?.absoluteString, pageTitle: pageTitle))
         inputText = ""
         let agent = LunaToolbox.agent(for: webView)
-        let usesJev = agent.policy is JevPolicy
-        let reply = ChatMessage(role: .assistant,
-                                text: "Agent (\(usesJev ? JevClient.configuredModel : LLMService.shared.modelName)): \(goal)\n",
-                                pageURL: webViewWrapper.currentURL?.absoluteString, pageTitle: pageTitle)
+        let model = agent.policy is JevPolicy ? JevClient.configuredModel : LLMService.shared.modelName
+        let card = AgentRunCard(goal: goal, model: model)
+        let reply = ChatMessage(role: .assistant, text: card.transcript,
+                                pageURL: webViewWrapper.currentURL?.absoluteString, pageTitle: pageTitle,
+                                card: .agentRun(card))
         messages.append(reply)
         let replyId = reply.id
         streamGeneration += 1
         let generation = streamGeneration
         streamingTask = Task {
             for await event in agent.run(goal: goal) {
-                guard generation == streamGeneration,
-                      let line = event.panelLine,
-                      let idx = messages.firstIndex(where: { $0.id == replyId }) else { continue }
-                messages[idx].text += "\n" + line
+                guard generation == streamGeneration else { continue }
+                updateCard(replyId) { if case .agentRun(var r) = $0 { r.apply(event); $0 = .agentRun(r) } }
             }
             guard generation == streamGeneration else { return }
             isSending = false
@@ -692,13 +910,20 @@ struct CommandSurfaceView: View {
         streamingTask?.cancel()
         streamingTask = nil
         isSending = false
-        // Mark partial response with a notice if there's content
-        if let lastIdx = messages.indices.last, messages[lastIdx].role == .assistant {
-            if !messages[lastIdx].text.isEmpty {
-                messages[lastIdx].text += "\n\n*[Generation stopped]*"
-            } else {
-                messages.removeLast()
+        guard let last = messages.last, last.role == .assistant else { return }
+        if last.card != nil {
+            updateCard(last.id) { card in
+                switch card {
+                case .agentRun(var r): r.markStopped(); card = .agentRun(r)
+                case .grab(var g):
+                    if g.status == .running { g.run.markStopped(); g.status = .stopped }
+                    card = .grab(g)
+                }
             }
+        } else if !last.text.isEmpty {
+            messages[messages.count - 1].text += "\n\n*[Generation stopped]*"
+        } else {
+            messages.removeLast()
         }
     }
 
@@ -799,177 +1024,6 @@ struct CommandSurfaceView: View {
         let summaries = historyManager.getSummariesForTab(tabId: tabId)
         conversationSummary = summaries.last?.summary
         lastSummarizedMessageCount = summaries.last.map { $0.messageRange.upperBound + 1 } ?? 0
-    }
-}
-
-// MARK: - GrowingTextEditor
-//
-// Height comes from the NSTextView's own layout manager — no invisible Text
-// mirror, no PreferenceKey. The NSTextView reports its content height after
-// every keystroke; the SwiftUI frame follows.
-
-private struct GrowingTextEditor: View {
-    @Binding var text: String
-    var placeholder: String
-    var minHeight: CGFloat
-    var fontSize: CGFloat = 13
-    @FocusState.Binding var isFocused: Bool
-    var onSubmit: (() -> Void)? = nil
-    @Binding var reportedHeight: CGFloat
-
-    @State private var textHeight: CGFloat = 36
-
-    private var font: Font { .system(size: fontSize) }
-    private let placeholderColor = Color(nsColor: .placeholderTextColor)
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            MultilineTextField(
-                text: $text,
-                fontSize: fontSize,
-                dynamicHeight: $textHeight,
-                minHeight: minHeight,
-                onSubmit: onSubmit
-            )
-            .focused($isFocused)
-
-            if text.isEmpty {
-                Text(placeholder)
-                    .font(font)
-                    .foregroundColor(placeholderColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .allowsHitTesting(false)
-            }
-        }
-        .frame(height: textHeight)
-        .onChange(of: textHeight) { _, h in reportedHeight = h }
-        .onAppear { reportedHeight = textHeight }
-        .animation(.easeOut(duration: 0.15), value: textHeight)
-    }
-}
-
-// MARK: - MultilineTextField (NSTextView wrapper)
-//
-// Reports its own content height via `dynamicHeight` using the layout manager.
-// No internal scrolling — the view always shows all text.
-
-private struct MultilineTextField: NSViewRepresentable {
-    @Binding var text: String
-    var fontSize: CGFloat
-    @Binding var dynamicHeight: CGFloat
-    var minHeight: CGFloat
-    var onSubmit: (() -> Void)?
-
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = false
-        scrollView.hasHorizontalScroller = false
-        scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false
-
-        let tv = BorderedTextView()
-        tv.delegate = context.coordinator
-        tv.onSubmit = onSubmit
-        tv.isRichText = false
-        tv.drawsBackground = false
-        tv.font = .systemFont(ofSize: fontSize)
-        tv.textColor = .labelColor
-        tv.isAutomaticQuoteSubstitutionEnabled = false
-        tv.isAutomaticDashSubstitutionEnabled = false
-        tv.isAutomaticTextReplacementEnabled = false
-        tv.isAutomaticSpellingCorrectionEnabled = false
-        tv.allowsUndo = true
-        tv.textContainerInset = NSSize(width: 4, height: 6)
-        let paragraphStyle = NSMutableParagraphStyle()
-        paragraphStyle.lineSpacing = 5
-        tv.defaultParagraphStyle = paragraphStyle
-        tv.typingAttributes[.paragraphStyle] = paragraphStyle
-        tv.isVerticallyResizable = true
-        tv.isHorizontallyResizable = false
-        tv.autoresizingMask = [.width]
-        tv.textContainer?.widthTracksTextView = true
-        tv.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
-        scrollView.documentView = tv
-        context.coordinator.textView = tv
-
-        DispatchQueue.main.async {
-            context.coordinator.recalculateHeight(tv)
-        }
-        return scrollView
-    }
-
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard let tv = scrollView.documentView as? BorderedTextView else { return }
-        if tv.string != text {
-            tv.string = text
-        }
-        tv.onSubmit = onSubmit
-        tv.font = .systemFont(ofSize: fontSize)
-        if let container = tv.textContainer {
-            let w = scrollView.contentSize.width
-            if w > 0 {
-                container.containerSize = NSSize(width: w, height: .greatestFiniteMagnitude)
-            }
-        }
-        // Defer height recalculation so we don't write @Binding during a view update
-        DispatchQueue.main.async {
-            context.coordinator.recalculateHeight(tv)
-        }
-    }
-
-    class Coordinator: NSObject, NSTextViewDelegate {
-        var parent: MultilineTextField
-        weak var textView: BorderedTextView?
-
-        init(_ parent: MultilineTextField) {
-            self.parent = parent
-        }
-
-        func textDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            parent.text = textView.string
-            recalculateHeight(textView)
-        }
-
-        func recalculateHeight(_ textView: NSTextView) {
-            guard let container = textView.textContainer,
-                  let manager = textView.layoutManager else { return }
-            manager.ensureLayout(for: container)
-            let usedRect = manager.usedRect(for: container)
-            let inset = textView.textContainerInset
-            let newHeight = usedRect.height + inset.height * 2
-            let clamped = max(parent.minHeight, newHeight)
-            if abs(clamped - parent.dynamicHeight) > 0.5 {
-                parent.dynamicHeight = clamped
-            }
-        }
-    }
-}
-
-private class BorderedTextView: NSTextView {
-    var onSubmit: (() -> Void)?
-
-    override func keyDown(with event: NSEvent) {
-        let isReturn = event.keyCode == 36
-        let isKeypadEnter = event.keyCode == 76
-        let isSubmitKey = (isReturn || isKeypadEnter) && !event.modifierFlags.contains(.shift)
-
-        if isSubmitKey {
-            onSubmit?()
-            return
-        }
-        super.keyDown(with: event)
-    }
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        // Allow Cmd+A, Cmd+C, Cmd+V, Cmd+X to work
-        if event.modifierFlags.contains(.command) {
-            return super.performKeyEquivalent(with: event)
-        }
-        return super.performKeyEquivalent(with: event)
     }
 }
 
