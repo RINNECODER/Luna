@@ -191,6 +191,23 @@ final class JevClient {
     }
 
     /// POST with retries on 429/503/529 (3 attempts, 0.5s·2^n backoff).
+    static let modelsEndpoint = URL(string: "https://api.typesafe.ai/v1/models")!
+
+    /// Models the TypeSafe account can use, for the Settings picker.
+    static func listModels(apiKey: String,
+                           transport: AgentHTTPTransport = URLSessionAgentTransport()) async throws -> [(id: String, name: String)] {
+        var request = URLRequest(url: modelsEndpoint)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let (data, status) = try await transport.send(request)
+        guard (200..<300).contains(status) else {
+            throw AgentError.transport("TypeSafe returned HTTP \(status) for the model list.")
+        }
+        guard case .array(let models)? = (try? JSONDecoder().decode(JSONValue.self, from: data))?["models"] else {
+            throw AgentError.invalidResponse("Invalid TypeSafe model list.")
+        }
+        return models.compactMap { $0["name"]?.stringValue }.map { ($0, $0) }
+    }
+
     private func post(_ body: JSONValue) async throws -> JSONValue {
         var request = URLRequest(url: Self.endpoint)
         request.httpMethod = "POST"

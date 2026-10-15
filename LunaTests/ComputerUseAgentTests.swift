@@ -54,6 +54,22 @@ private func jevResponse(_ answers: [String: JSONValue]) -> JSONValue {
 
 @MainActor
 final class JevClientTests: XCTestCase {
+    func testListModelsReadsNamesFromTheModelsEndpoint() async throws {
+        let stub = StubTransport([(200, .object(["models": .array([.object(["name": "jev-latest"]), .object(["name": "jev-preview"])])]))])
+        let models = try await JevClient.listModels(apiKey: "k", transport: stub)
+        XCTAssertEqual(models.map { $0.id }, ["jev-latest", "jev-preview"])
+        XCTAssertEqual(stub.requests.first?.url, JevClient.modelsEndpoint)
+        XCTAssertEqual(stub.requests.first?.value(forHTTPHeaderField: "Authorization"), "Bearer k")
+    }
+
+    func testListModelsThrowsOnHTTPError() async {
+        let stub = StubTransport([(401, .object(["detail": "Unauthorized"]))])
+        do {
+            _ = try await JevClient.listModels(apiKey: "bad", transport: stub)
+            XCTFail("expected an error")
+        } catch {}
+    }
+
     func testValidateChoiceAcceptsArgmaxOverExactlyTheOfferedIds() throws {
         let c = try JevClient.validateChoice(answer("a", ["a": 0.7, "b": 0.3]), ids: ["a", "b"])
         XCTAssertEqual(c.choice, "a")

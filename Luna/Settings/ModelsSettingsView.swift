@@ -164,8 +164,12 @@ private struct ComputerUseSection: View {
     var body: some View {
         Section("Computer use (Jev)") {
             APIKeyField(account: .typesafeKey, placeholder: "TypeSafe API key")
-            TextField("Model", text: $model, prompt: Text(JevClient.defaultModel))
-                .autocorrectionDisabled()
+            ModelPicker(selection: $model) {
+                guard let key = KeychainManager.shared.string(for: .typesafeKey), !key.isEmpty else {
+                    throw AgentError.transport("Add a TypeSafe API key to list Jev models.")
+                }
+                return try await JevClient.listModels(apiKey: key)
+            }
             Text("Type /agent followed by a goal in the AI panel to let Luna operate the current tab. With a TypeSafe key, Jev picks each step; without one, the model above does. Typed values always come from the model above.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
