@@ -350,21 +350,21 @@
       <div class="head">
         <span class="mono">03 — The assistant</span>
         <div>
-          <h2>Your model. <em>Your Mac.</em></h2>
-          <p>Run a model on your own machine with Ollama, or use Google Gemini. Luna works with any model your Ollama install has.</p>
+          <h2>Your model. <em>Your choice.</em></h2>
+          <p>Sign in with ChatGPT, bring an API key from Anthropic, OpenAI or Google Gemini, or run any model on your own Mac with Ollama.</p>
         </div>
       </div>
       <div class="split">
         <div>
           <div class="term">
             <div class="bar"><i></i><i></i><i></i><span class="mono">zsh</span></div>
-<pre><span class="c"># recommended: gpt-oss 120B, open weights</span>
+<pre><span class="c"># local models, e.g. gpt-oss</span>
 <b>$ ollama run gpt-oss:120b</b>
 
 <span class="c"># then in Luna:</span>
 Settings › AI &amp; Models › Ollama</pre>
           </div>
-          <div class="providers"><span>Ollama</span><span>Gemini</span><span>Any local model</span></div>
+          <div class="providers"><span>ChatGPT</span><span>Anthropic</span><span>OpenAI</span><span>Gemini</span><span>Ollama</span></div>
         </div>
         <div>
           <p class="mono" style="margin: 0 0 18px;">Keyboard first</p>
@@ -446,7 +446,7 @@ Settings › AI &amp; Models › Ollama</pre>
     const WORDS = "LUNA·BROWSER·SWIFT·WEBKIT·MOONLIGHT·";
 
     // Ticker
-    const items = ["Swift", "WebKit", "Split view", "uBlock Origin Lite", "Ollama", "Gemini", "Keychain", "MIT licensed"];
+    const items = ["Swift", "WebKit", "Split view", "uBlock Origin Lite", "ChatGPT", "Anthropic", "OpenAI", "Gemini", "Ollama", "Keychain", "MIT licensed"];
     const row = items.map(t => `<span>${t}<i>✦</i></span>`).join("");
     document.getElementById("ticker").innerHTML = row + row;
 

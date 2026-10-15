@@ -61,7 +61,7 @@ Native Swift and WebKit, with an AI assistant that shows up when you ask and sta
 
 - **Native, not ported.** SwiftUI on WebKit, the engine behind Safari. No Electron, no Chromium.
 - **Search first.** The start page sends lookups to Google. Chat is one `⌘↩` away, never in the way.
-- **Your model, your Mac.** Run AI locally with Ollama, or use Google Gemini.
+- **Bring your own model.** Sign in with ChatGPT, use an API key from Anthropic, OpenAI or Google Gemini, or run models locally with Ollama.
 - **Private by default.** uBlock Origin Lite built in, API keys in your Keychain, nothing collected.
 
 ## Features
@@ -96,13 +96,25 @@ Native Swift and WebKit, with an AI assistant that shows up when you ask and sta
 
 ## Bring your own model
 
-Luna works with Google Gemini (cloud) or any model in your local [Ollama](https://ollama.com/download) install. For the best results we recommend [gpt-oss 120B](https://ollama.com/library/gpt-oss:120b), OpenAI's open-weight model with full chain of thought and native tool calling, under Apache 2.0:
+Luna works with the provider you already use. Pick one in **Settings › AI & Models**:
+
+| Provider | How it connects |
+| --- | --- |
+| ChatGPT | Sign in with your ChatGPT Plus or Pro account |
+| Anthropic | API key from the Claude Console |
+| OpenAI | API key from the OpenAI platform |
+| Google Gemini | API key from Google AI Studio |
+| Ollama | Any model running locally on your Mac; nothing leaves your computer |
+
+API keys are stored in the macOS Keychain.
+
+To run an open-weight model locally, install [Ollama](https://ollama.com/download) and pull a model, for example [gpt-oss](https://ollama.com/library/gpt-oss):
 
 ```bash
 ollama run gpt-oss:120b
 ```
 
-Then in Luna, open **Settings › AI & Models**, choose **Ollama** and pick `gpt-oss:120b`.
+Then in Luna, open **Settings › AI & Models**, choose **Ollama** and pick the model.
 
 ## Build from source
 
