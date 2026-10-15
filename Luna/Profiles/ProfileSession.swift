@@ -67,6 +67,18 @@ final class ProfileSession: ObservableObject {
             historyManager?.recordPageVisit(url: url, title: title)
             extensionHost?.tabChanged(tabId, [.URL, .title, .loading])
         }
+        webViewWrapper.onTabNavigationBecameDownload = { [weak self] tabId, committedURL, isPopup in
+            guard let self else { return }
+            if let committedURL {
+                // The tab still shows its page; keep that, not the download URL.
+                self.workspace.updateURL(tabId, committedURL)
+            } else if isPopup, self.workspace.orderedTabIds.count > 1 {
+                // A link opened a tab just to download: close it, like Safari and Chrome.
+                if self.workspace.close(tabId) == .removed { self.webViewWrapper.removeWebView(for: tabId) }
+            } else {
+                self.workspace.updateURL(tabId, nil)
+            }
+        }
         self.workspace.captureInteractionStates = { [weak webViewWrapper] in
             webViewWrapper?.interactionStates() ?? [:]
         }

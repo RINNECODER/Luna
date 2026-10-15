@@ -36,8 +36,8 @@ targetTemplates:
       base:
         PRODUCT_NAME: Luna
         PRODUCT_BUNDLE_IDENTIFIER: com.luna.browser
-        MARKETING_VERSION: "1.0"
-        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: "1.0.2"
+        CURRENT_PROJECT_VERSION: 3
         SWIFT_VERSION: "5.0"
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: Luna/Luna.entitlements
@@ -65,7 +65,7 @@ targetTemplates:
         ENABLE_RESOURCE_ACCESS_LOCATION: NO # TODO: Enable this when we have a way to handle location
         ENABLE_RESOURCE_ACCESS_PRINTING: YES
         ENABLE_RESOURCE_ACCESS_USB: NO
-        ENABLE_USER_SELECTED_FILES: readonly # TODO: Enable this when we have a way to handle user selected files
+        ENABLE_USER_SELECTED_FILES: readwrite # Save panels, e.g. Save as PDF from the print dialog
         ENABLE_FILE_ACCESS_DOWNLOADS_FOLDER: readwrite # Save downloads to ~/Downloads
         PROVISIONING_PROFILE_SPECIFIER: ""
         CODE_SIGN_IDENTITY: "Apple Development"

@@ -377,7 +377,7 @@ final class TabDragPreview {
 }
 
 /// Reports the window a view is in, as it moves between windows.
-private struct WindowReader: NSViewRepresentable {
+struct WindowReader: NSViewRepresentable {
     let onWindow: (NSWindow?) -> Void
 
     func makeNSView(context: Context) -> NSView { ReaderView(onWindow: onWindow) }

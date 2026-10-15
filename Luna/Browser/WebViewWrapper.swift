@@ -4,6 +4,9 @@ import WebKit
 import SwiftUI
 import Combine
 import AppKit
+import os
+
+private let downloadLog = Logger(subsystem: "com.luna.browser", category: "downloads")
 
 /// Manages one WKWebView per tab. Safe configuration, no message handlers.
 /// Exposes page theme (background color) for chrome unification.
@@ -36,8 +39,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     @Published var canGoBackForActiveTab: Bool = false
     @Published var canGoForwardForActiveTab: Bool = false
 
-    /// Pending download destination info for WKDownloadDelegate (keyed by ObjectIdentifier of WKDownload).
-    private var downloadDestinationByID: [ObjectIdentifier: (fileURL: URL, requestURL: URL?, suggestedFilename: String)] = [:]
+    /// DownloadManager item for each in-flight WKDownload (keyed by ObjectIdentifier of WKDownload).
+    private var downloadItemByID: [ObjectIdentifier: UUID] = [:]
+    /// Tabs created for `target="_blank"` / `window.open()` popups.
+    private var popupTabIds: Set<UUID> = []
 
     /// Per-tab zoom (1.0 = 100%). Applied via WKWebView.pageZoom.
     private var zoomByTab: [UUID: CGFloat] = [:]
@@ -93,6 +98,11 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
     /// The profile's web-extension controller; attached to every tab's configuration.
     weak var extensionController: WKWebExtensionController?
     var onNavigationFinished: ((UUID, URL, String) -> Void)?
+    /// A main-frame navigation in a tab turned into a download. Passes the page
+    /// the tab still shows (nil if it never showed one) and whether the tab
+    /// was opened as a popup, so the tab doesn't keep the download URL and
+    /// download the file again when it's restored.
+    var onTabNavigationBecameDownload: ((_ tabId: UUID, _ committedURL: URL?, _ isPopup: Bool) -> Void)?
 
     init(profileId: UUID, dataStore: WKWebsiteDataStore) {
         self.profileId = profileId
@@ -551,7 +561,7 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         config.userContentController.add(linkPreviewHandler, contentWorld: .defaultClient, name: "lunaLinkPreview")
         config.userContentController.addUserScript(WKUserScript(source: WebViewWrapper.linkPreviewScriptSource, injectionTime: .atDocumentEnd,
                                                                 forMainFrameOnly: true, in: .defaultClient))
-        let wv = WKWebView(frame: .zero, configuration: config)
+        let wv = LunaWebView(frame: .zero, configuration: config)
         // Use Safari UA for all requests to avoid bot detection on Akamai-protected sites.
         wv.customUserAgent = WebViewWrapper.safariUserAgent
         register(webView: wv, for: tabId)
@@ -564,6 +574,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         wv.uiDelegate = self
         wv.allowsBackForwardNavigationGestures = true
         wv.allowsMagnification = true
+        (wv as? LunaWebView)?.onDownloadRequest = { [weak self, weak wv] url in
+            guard let self, let wv else { return }
+            self.startDownload(of: url, from: wv)
+        }
         webViews[tabId] = wv
 
         let titleObservation = wv.observe(\.title, options: [.new]) { [weak self, tabId] webView, _ in
@@ -947,6 +961,7 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
             wv.uiDelegate = nil
         }
         webViews.removeValue(forKey: tabId)
+        popupTabIds.remove(tabId)
         loadingProgressByTab.removeValue(forKey: tabId)
         if !keepMetadata {
             faviconURLByTab.removeValue(forKey: tabId)
@@ -978,7 +993,7 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, preferences: WKWebpagePreferences, decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
         if navigationAction.shouldPerformDownload {
-            print("WebViewWrapper: Navigation marked as download: \(navigationAction.request.url?.absoluteString ?? "nil")")
+            downloadLog.info("Navigation marked as download: \(navigationAction.request.url?.absoluteString ?? "nil", privacy: .public)")
             decisionHandler(.download, preferences)
             return
         }
@@ -1076,10 +1091,21 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
         download.delegate = self
+        if navigationAction.targetFrame?.isMainFrame ?? true { mainFrameNavigationBecameDownload(in: webView) }
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
         download.delegate = self
+        if navigationResponse.isForMainFrame { mainFrameNavigationBecameDownload(in: webView) }
+    }
+
+    private func mainFrameNavigationBecameDownload(in webView: WKWebView) {
+        guard let tabId = webViews.first(where: { $0.value === webView })?.key else { return }
+        let committed = webView.backForwardList.currentItem?.url
+        let isPopup = popupTabIds.contains(tabId)
+        DispatchQueue.main.async { [weak self] in
+            self?.onTabNavigationBecameDownload?(tabId, committed, isPopup)
+        }
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -1169,6 +1195,26 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         return (ns, luminance <= 0.5)
     }
 
+    /// Downloads a URL picked from the page's context menu.
+    private func startDownload(of url: URL, from webView: WKWebView) {
+        if url.scheme == "data" {
+            // Inline images (e.g. Google Images thumbnails) are already in the URL.
+            guard let data = try? Data(contentsOf: url) else { return }
+            DownloadManager.shared.save(data, mimeType: Self.dataURLMIMEType(url), sourceURL: webView.url ?? url)
+            return
+        }
+        var request = URLRequest(url: url)
+        if let page = webView.url { request.setValue(page.absoluteString, forHTTPHeaderField: "Referer") }
+        webView.startDownload(using: request) { [weak self] download in
+            download.delegate = self
+        }
+    }
+
+    private static func dataURLMIMEType(_ url: URL) -> String? {
+        let header = url.absoluteString.dropFirst("data:".count).prefix { $0 != "," }
+        return header.split(separator: ";").first.map(String.init)
+    }
+
     // MARK: - WKDownloadDelegate (saves to ~/Downloads, notifies DownloadManager)
 
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
@@ -1182,22 +1228,22 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
             dest = downloadsDir.appendingPathComponent(name)
             counter += 1
         }
-        let requestURL = response.url ?? download.originalRequest?.url
-        let id = ObjectIdentifier(download)
-        downloadDestinationByID[id] = (dest, requestURL, suggestedFilename)
+        let requestURL = response.url ?? download.originalRequest?.url ?? dest
+        downloadItemByID[ObjectIdentifier(download)] = DownloadManager.shared.begin(
+            download, url: requestURL, fileURL: dest, suggestedFilename: suggestedFilename)
+        downloadLog.info("Saving download to \(dest.path, privacy: .public)")
         completionHandler(dest)
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        let id = ObjectIdentifier(download)
-        guard let info = downloadDestinationByID.removeValue(forKey: id) else { return }
-        let requestURL = info.requestURL ?? info.fileURL
-        DownloadManager.shared.addDownload(url: requestURL, fileURL: info.fileURL, suggestedFilename: info.suggestedFilename)
+        guard let id = downloadItemByID.removeValue(forKey: ObjectIdentifier(download)) else { return }
+        DownloadManager.shared.finish(id)
     }
 
     func download(_ download: WKDownload, didFailWithError error: any Error, resumeData: Data?) {
-        let info = downloadDestinationByID.removeValue(forKey: ObjectIdentifier(download))
-        print("WebViewWrapper: Download failed:", info?.fileURL.path ?? "(no destination)", error.localizedDescription)
+        downloadLog.error("Download failed: \(download.originalRequest?.url?.absoluteString ?? "(unknown)", privacy: .public) \(String(describing: error), privacy: .public)")
+        guard let id = downloadItemByID.removeValue(forKey: ObjectIdentifier(download)) else { return }
+        DownloadManager.shared.fail(id, error: error)
     }
 
     // MARK: - WKUIDelegate
@@ -1247,9 +1293,10 @@ final class WebViewWrapper: NSObject, ObservableObject, WKNavigationDelegate, WK
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
         #endif
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        let wv = WKWebView(frame: .zero, configuration: configuration)
+        let wv = LunaWebView(frame: .zero, configuration: configuration)
         wv.customUserAgent = Self.userAgent(for: requestURL)
         register(webView: wv, for: id)
+        popupTabIds.insert(id)
 
         setActiveTab(id)
         // Do NOT call `load()` here — WebKit will load `navigationAction.request` into the returned webview.
