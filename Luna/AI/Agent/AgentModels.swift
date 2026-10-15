@@ -127,10 +127,27 @@ struct PageSnapshot: Codable, Equatable {
     }
 }
 
-/// Single place where page content leaves the page for a model. No-op for now;
-/// Phase 3 masks secrets here. Freshness markers are computed in the page and untouched.
+/// Single place where page content leaves the page for a model (Jev, the chat model, or an
+/// outside agent over MCP). Masks well-known API key and token formats so a page that shows
+/// a secret never hands it to a model. Freshness markers are computed in the page and untouched.
 enum AgentRedaction {
-    static func redact(_ text: String) -> String { text }
+    static let mask = "[redacted secret]"
+
+    private static let secretPattern: NSRegularExpression? = try? NSRegularExpression(pattern: [
+        #"\bsk-[A-Za-z0-9_-]{20,}"#,                                   // OpenAI / Anthropic
+        #"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"#,             // Stripe
+        #"\bgh[pousr]_[A-Za-z0-9]{30,}"#, #"\bgithub_pat_[A-Za-z0-9_]{30,}"#,
+        #"\bAKIA[0-9A-Z]{16}\b"#,                                     // AWS access key id
+        #"\bAIza[0-9A-Za-z_-]{35}"#,                                   // Google
+        #"\bxox[abposr]-[A-Za-z0-9-]{10,}"#,                           // Slack
+        #"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"#, // JWT
+    ].joined(separator: "|"))
+
+    static func redact(_ text: String) -> String {
+        guard let secretPattern, !text.isEmpty else { return text }
+        return secretPattern.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
+                                                      withTemplate: mask)
+    }
 
     static func redact(_ snapshot: PageSnapshot) -> PageSnapshot {
         var s = snapshot

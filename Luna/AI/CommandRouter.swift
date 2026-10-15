@@ -181,7 +181,4 @@ private func normalizeURLString(_ urlString: String) -> String {
     }
 }
 
-private func isSafeBrowserURL(_ url: URL) -> Bool {
-    guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return false }
-    return url.host != nil
-}
+// isSafeBrowserURL lives in LunaToolbox.swift, shared with the agent tools.

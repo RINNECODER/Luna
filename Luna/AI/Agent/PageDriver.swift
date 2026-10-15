@@ -22,7 +22,8 @@ protocol AgentPageDriving: AnyObject {
 final class PageDriver: AgentPageDriving {
     static let world = WKContentWorld.world(name: "lunaAgent")
 
-    let webView: WKWebView
+    /// Weak so a cached driver (see `LunaToolbox`) never keeps a closed tab's page alive.
+    private(set) weak var webView: WKWebView?
     private(set) var lastSnapshot: PageSnapshot?
 
     init(webView: WKWebView) {
@@ -127,7 +128,7 @@ final class PageDriver: AgentPageDriving {
     /// Waits (bounded) for an in-flight navigation to finish.
     private func waitForLoad(timeout: TimeInterval = 10) async {
         let deadline = Date().addingTimeInterval(timeout)
-        while webView.isLoading, Date() < deadline, !Task.isCancelled {
+        while webView?.isLoading == true, Date() < deadline, !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 30_000_000)
         }
     }
@@ -137,6 +138,7 @@ final class PageDriver: AgentPageDriving {
     /// Runs `library + body` in the agent world, with a timeout so a page that never
     /// resolves (or navigates away mid-call) cannot hang the loop.
     private func run(_ body: String, _ arguments: [String: Any] = [:], timeout: TimeInterval = 5) async throws -> Any? {
+        guard let webView else { throw AgentError.stalePage("The tab was closed.") }
         let source = AgentPageScript.library + "\n" + body
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Any?, Error>) in
             var resumed = false

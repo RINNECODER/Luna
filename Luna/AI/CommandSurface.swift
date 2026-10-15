@@ -593,7 +593,7 @@ struct CommandSurfaceView: View {
         messages.append(ChatMessage(role: .user, text: command,
                                     pageURL: webViewWrapper.currentURL?.absoluteString, pageTitle: pageTitle))
         inputText = ""
-        let agent = ComputerUseAgent.make(webView: webView)
+        let agent = LunaToolbox.agent(for: webView)
         let usesJev = agent.policy is JevPolicy
         let reply = ChatMessage(role: .assistant,
                                 text: "Agent (\(usesJev ? JevClient.configuredModel : LLMService.shared.modelName)): \(goal)\n",

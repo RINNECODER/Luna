@@ -21,14 +21,15 @@ final class ComputerUseAgent {
     }
 
     /// Jev when a TypeSafe key is saved, otherwise the user's chat model.
-    static func make(webView: WKWebView) -> ComputerUseAgent {
+    /// Use `LunaToolbox.agent(for:)`, which shares the tab's driver with the tools.
+    static func make(driver: AgentPageDriving, maxSteps: Int = AgentPrompts.maxSteps) -> ComputerUseAgent {
         let policy: AgentPolicy
         if let key = KeychainManager.shared.string(for: .typesafeKey), !key.isEmpty {
             policy = JevPolicy(client: JevClient(apiKey: key))
         } else {
             policy = LLMPolicy()
         }
-        return ComputerUseAgent(driver: PageDriver(webView: webView), policy: policy)
+        return ComputerUseAgent(driver: driver, policy: policy, maxSteps: maxSteps)
     }
 
     /// Streams step events. Cancelling the consuming task (or dropping the stream) stops the run.
