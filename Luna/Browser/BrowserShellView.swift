@@ -67,13 +67,11 @@ struct BrowserShellView: View {
     @StateObject private var addressBarKeyState = AddressBarKeyState()
     @State private var suggestionDebounceTask: DispatchWorkItem?
     @State private var historyDebounceTask: DispatchWorkItem?
-    @State private var showDownloadsHub: Bool = false
     @State private var showGoogleAPIKeyHelpSheet: Bool = false
     @State private var showBrowserFindBar: Bool = false
     @State private var browserFindQuery: String = ""
     /// Luna Max "Ask on Page" card for the current tab.
     @State private var askOnPageVisible: Bool = false
-    @ObservedObject private var downloadManager = DownloadManager.shared
     @State private var downloadIconScale: CGFloat = 1
     @State private var isFullScreen: Bool = false
     @State private var hostWindow: NSWindow?
@@ -204,9 +202,6 @@ struct BrowserShellView: View {
             } else {
                 Text("No action to execute.")
             }
-        }
-        .sheet(isPresented: $showDownloadsHub) {
-            DownloadsHubView()
         }
         .onAppear {
             #if DEBUG
@@ -562,7 +557,7 @@ struct BrowserShellView: View {
             submitAddress: { applyAddressBarSubmit() },
             goHome: { goHome() },
             toggleAI: { toggleAIPanel() },
-            showDownloads: { showDownloadsHub = true },
+            showDownloads: { DownloadManager.shared.presentHub() },
             showHistory: { navigateToHistory() },
             askOnPage: { openAskOnPage() }
         )
@@ -578,7 +573,6 @@ struct BrowserShellView: View {
             addressFocused: $addressBarFocused,
             isFullScreen: isFullScreen,
             showsTabs: showsTabs,
-            downloadsCount: downloadManager.recentDownloads.count,
             profileControl: AnyView(profileControl),
             extensions: session.extensions,
             actions: topChromeActions
@@ -679,7 +673,6 @@ struct BrowserShellView: View {
                 tearOff: { tearOff($0, at: $1) }
             ),
             onToggleSidebar: toggleSidebar,
-            onShowDownloads: { showDownloadsHub = true },
             extensions: session.extensions,
             profileControl: AnyView(profileControl)
         )
@@ -1484,105 +1477,6 @@ struct BrowserShellView: View {
 // MARK: - Profile window registry
 
 /// Keeps profile windows alive (isReleasedWhenClosed = false) and releases them on close.
-
-// MARK: - Downloads hub (recent downloads; open / reveal in Finder)
-
-private struct DownloadsHubView: View {
-    @ObservedObject private var downloadManager = DownloadManager.shared
-    @Environment(\.dismiss) private var dismiss
-
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .short
-        f.timeStyle = .short
-        return f
-    }()
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 18, weight: .medium))
-                Text("Downloads")
-                    .font(.system(size: 18, weight: .semibold))
-                Spacer()
-                Button("Done") { dismiss() }
-                    .buttonStyle(.borderedProminent)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-
-            if downloadManager.recentDownloads.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "tray.and.arrow.down")
-                        .font(.system(size: 40))
-                        .foregroundStyle(.secondary)
-                    Text("No recent downloads")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List {
-                    ForEach(downloadManager.recentDownloads) { item in
-                        HStack(spacing: 12) {
-                            Image(systemName: "doc.fill")
-                                .font(.system(size: 20))
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.displayName)
-                                    .font(.system(size: 13, weight: .medium))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                HStack(spacing: 6) {
-                                    Text(Self.dateFormatter.string(from: item.date))
-                                    if item.isTidying {
-                                        Text("· Tidying name…")
-                                    } else if let original = item.originalFileURL {
-                                        Text("· Renamed from \(original.lastPathComponent)").lineLimit(1).truncationMode(.middle)
-                                        Button("Undo") { downloadManager.undoTidy(item.id) }
-                                            .buttonStyle(.link)
-                                    }
-                                }
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            if item.originalFileURL == nil, !item.isTidying {
-                                Button {
-                                    downloadManager.tidy(item.id)
-                                } label: {
-                                    Image(systemName: "sparkles")
-                                }
-                                .buttonStyle(.borderless)
-                                .help("Tidy file name")
-                            }
-                            Button("Open") {
-                                downloadManager.open(item)
-                            }
-                            .buttonStyle(.bordered)
-                            Button("Show in Finder") {
-                                downloadManager.revealInFinder(item)
-                            }
-                            .buttonStyle(.bordered)
-                            Button(role: .destructive) {
-                                downloadManager.removeItem(item)
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.system(size: 12, weight: .medium))
-                            }
-                            .buttonStyle(.plain)
-                            .help("Remove from list")
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-                .listStyle(.plain)
-            }
-        }
-        .frame(minWidth: 480, minHeight: 320)
-    }
-}
 
 // MARK: - Google “suspicious request” banner + help (DIA-style: explain it’s Google’s decision, not Luma)
 

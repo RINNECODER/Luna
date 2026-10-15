@@ -10,7 +10,6 @@ struct SidebarView: View {
     let isFullScreen: Bool
     let actions: SidebarActions
     let onToggleSidebar: () -> Void
-    let onShowDownloads: () -> Void
     let extensions: ExtensionHost
     /// Profile switcher, supplied by the shell (it owns profile state).
     let profileControl: AnyView
@@ -93,7 +92,7 @@ struct SidebarView: View {
                 }
             }
             SidebarMoreMenu(extensions: extensions)
-            ToolbarIconButton(systemName: "arrow.down.circle", help: "Downloads", action: onShowDownloads)
+            DownloadsButton()
         }
         .frame(height: 28)
     }

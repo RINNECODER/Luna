@@ -27,7 +27,6 @@ struct TopChromeView: View {
     let isFullScreen: Bool
     /// False in frameless mode: tabs live in the edge-revealed list instead.
     let showsTabs: Bool
-    let downloadsCount: Int
     let profileControl: AnyView
     let extensions: ExtensionHost
     let actions: TopChromeActions
@@ -152,19 +151,7 @@ struct TopChromeView: View {
     private var toolbarIcons: some View {
         HStack(spacing: 2) {
             ToolbarIconButton(systemName: "sparkles", help: "Luna AI (⌘E)", action: actions.toggleAI)
-            ZStack(alignment: .topTrailing) {
-                ToolbarIconButton(systemName: "arrow.down.circle", help: "Downloads", action: actions.showDownloads)
-                if downloadsCount > 0 {
-                    Text(downloadsCount > 99 ? "99+" : "\(downloadsCount)")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(.red))
-                        .offset(x: 3, y: -1)
-                        .allowsHitTesting(false)
-                }
-            }
+            DownloadsButton()
             profileControl
             MoreMenu(actions: actions, extensions: extensions)
         }
