@@ -260,3 +260,32 @@ final class MCPBridgeTests: XCTestCase {
         XCTAssertEqual(AgentRedaction.redact("sk-short and plain text"), "sk-short and plain text")
     }
 }
+
+// MARK: - Dev mode session tokens
+
+extension MCPBridgeTests {
+    func testDevSessionTokenIsAcceptedAndSkipsLunaPrompt() async throws {
+        let devToken = "dev-session-token-0123456789"
+        var accepted: Set<String> = [devToken]
+        endpoint.trustedTokens = { accepted }
+        approver.answer = .deny
+
+        let r = await endpoint.handle(request(body: #"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"claude-code","version":"1"}}}"#,
+                                              headers: ["authorization": "Bearer \(devToken)"]))
+        XCTAssertEqual(r.status, 200)
+        let session = try XCTUnwrap(r.headers["Mcp-Session-Id"])
+        let opened = await endpoint.handle(request(body: #"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"tab_open","arguments":{"url":"https://dev.test"}}}"#,
+                                                   headers: ["mcp-session-id": session, "authorization": "Bearer \(devToken)"]))
+        XCTAssertEqual(isError(try json(opened)), false)
+        XCTAssertEqual(approver.asked, [], "the CLI asks the user itself; Luna must not prompt again")
+
+        // The main token still prompts, and a revoked dev token is refused outright.
+        let main = try await initialize()
+        _ = try await call(main, "tab_open", #"{"url":"https://main.test"}"#)
+        XCTAssertEqual(approver.asked, ["tab_open"])
+        accepted = []
+        let revoked = await endpoint.handle(request(body: #"{"jsonrpc":"2.0","id":3,"method":"ping"}"#,
+                                                    headers: ["mcp-session-id": session, "authorization": "Bearer \(devToken)"]))
+        XCTAssertEqual(revoked.status, 401)
+    }
+}

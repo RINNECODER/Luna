@@ -13,13 +13,19 @@ packages:
   LaTeXSwiftUI:
     url: https://github.com/colinc86/LaTeXSwiftUI
     from: "1.5.0"
+  # Dev mode's raw terminal. 1.10.1: the last release without a build-tool plugin
+  # (later ones need -skipPackagePluginValidation / a trust prompt to build).
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: "1.10.1"
 
 configFiles:
   Debug: Signing.xcconfig
   Release: Signing.xcconfig
 
-targets:
-  Luna:
+# Shared by the sandboxed Luna app and the unsandboxed Luna Dev variant.
+targetTemplates:
+  LunaApp:
     type: application
     platform: macOS
     sources:
@@ -85,9 +91,34 @@ targets:
     dependencies:
       - package: MarkdownUI
       - package: LaTeXSwiftUI
+      - package: SwiftTerm
     configFiles:
       Debug: Signing.xcconfig
       Release: Signing.xcconfig
+
+targets:
+  Luna:
+    templates: [LunaApp]
+
+  # Unsandboxed build for Dev mode (drives the claude / codex CLIs). Same sources;
+  # separate bundle id so it never shares the sandboxed app's container or settings.
+  LunaDev:
+    templates: [LunaApp]
+    settings:
+      base:
+        PRODUCT_NAME: Luna Dev
+        PRODUCT_MODULE_NAME: LunaDev
+        PRODUCT_BUNDLE_IDENTIFIER: com.luna.browser.dev
+        INFOPLIST_KEY_CFBundleDisplayName: Luna Dev
+        INFOPLIST_KEY_CFBundleName: Luna Dev
+        ENABLE_APP_SANDBOX: NO
+        # Its own keychain access group: the default one is tied to com.luna.browser.
+        CODE_SIGN_ENTITLEMENTS: Luna/LunaDev.entitlements
+      configs:
+        Debug:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "LUNA_DEV $(inherited)"
+        Release:
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "LUNA_DEV $(inherited)"
 
   LunaTests:
     type: bundle.unit-test
