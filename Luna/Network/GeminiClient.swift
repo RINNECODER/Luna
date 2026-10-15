@@ -4,14 +4,17 @@ import Foundation
 // MARK: - Errors
 
 enum GeminiError: LocalizedError {
-    case noAPIKeyOrUnauthorized
+    case missingAPIKey
+    case unauthorized
     case endpointNotFound
     case networkFailure(String)
 
     var errorDescription: String? {
         switch self {
-        case .noAPIKeyOrUnauthorized:
-            return "Unauthorized (401). Your API key is missing or invalid."
+        case .missingAPIKey:
+            return "Add a Gemini API key, or choose another provider, in Settings → AI & Models."
+        case .unauthorized:
+            return "Gemini rejected the API key. Check it in Settings → AI & Models."
         case .endpointNotFound:
             return "Gemini API returned 404. Check your API version."
         case .networkFailure(let msg):
@@ -49,7 +52,7 @@ final class GeminiClient {
     ) -> Task<Void, Never> {
         Task {
             guard let apiKey = apiKeyProvider() else {
-                await MainActor.run { onCompletion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
+                await MainActor.run { onCompletion(.failure(GeminiError.missingAPIKey)) }
                 return
             }
 
@@ -76,7 +79,7 @@ final class GeminiClient {
                 if let http = response as? HTTPURLResponse {
                     switch http.statusCode {
                     case 401:
-                        await MainActor.run { onCompletion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
+                        await MainActor.run { onCompletion(.failure(GeminiError.unauthorized)) }
                         return
                     case 404:
                         await MainActor.run { onCompletion(.failure(GeminiError.endpointNotFound)) }
@@ -117,7 +120,7 @@ final class GeminiClient {
         completion: @escaping (Result<Data, Error>) -> Void
     ) {
         guard let apiKey = apiKeyProvider() else {
-            DispatchQueue.main.async { completion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
+            DispatchQueue.main.async { completion(.failure(GeminiError.missingAPIKey)) }
             return
         }
         guard let url = URL(string: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent") else {
@@ -144,7 +147,7 @@ final class GeminiClient {
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                 switch http.statusCode {
                 case 401, 403:
-                    DispatchQueue.main.async { completion(.failure(GeminiError.noAPIKeyOrUnauthorized)) }
+                    DispatchQueue.main.async { completion(.failure(GeminiError.unauthorized)) }
                 case 404:
                     DispatchQueue.main.async { completion(.failure(GeminiError.endpointNotFound)) }
                 default:

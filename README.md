@@ -92,7 +92,7 @@ Native Swift and WebKit, with an AI assistant that shows up when you ask and sta
 
 1. Download `Luna.dmg` from the [latest release](https://github.com/Rahul4301/Luna/releases/latest).
 2. Open it and drag Luna into Applications.
-3. If macOS says it can't check the app, right-click Luna and choose **Open**.
+3. Open Luna. Luna isn't notarized yet, so the first time macOS warns that it can't verify the app. Click **Done**, then go to **System Settings › Privacy & Security**, scroll to Security and click **Open Anyway** next to the message about Luna. Confirm with your password. You only need to do this once.
 
 ## Bring your own model
 
