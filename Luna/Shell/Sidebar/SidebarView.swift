@@ -31,6 +31,8 @@ struct SidebarView: View {
         .padding(.bottom, 8)
     }
 
+    @AppStorage(ChromePrefs.showToolbar) private var showToolbar = false
+
     // MARK: Top row
 
     private var topRow: some View {
@@ -39,14 +41,17 @@ struct SidebarView: View {
             Spacer().frame(width: isFullScreen ? 0 : 70)
             ToolbarIconButton(systemName: "sidebar.left", help: "Hide Sidebar (⌘S)", action: onToggleSidebar)
             Spacer(minLength: 0)
-            ToolbarIconButton(systemName: "chevron.left", help: "Back", isEnabled: web.canGoBackForActiveTab) {
-                if let id = store.activeTabId { web.goBack(in: id) }
-            }
-            ToolbarIconButton(systemName: "chevron.right", help: "Forward", isEnabled: web.canGoForwardForActiveTab) {
-                if let id = store.activeTabId { web.goForward(in: id) }
-            }
-            ToolbarIconButton(systemName: "arrow.clockwise", help: "Reload (⌘R)") {
-                if let id = store.activeTabId { web.reload(in: id) }
+            // With the toolbar on, navigation lives there instead.
+            if !showToolbar {
+                ToolbarIconButton(systemName: "chevron.left", help: "Back", isEnabled: web.canGoBackForActiveTab) {
+                    if let id = store.activeTabId { web.goBack(in: id) }
+                }
+                ToolbarIconButton(systemName: "chevron.right", help: "Forward", isEnabled: web.canGoForwardForActiveTab) {
+                    if let id = store.activeTabId { web.goForward(in: id) }
+                }
+                ToolbarIconButton(systemName: "arrow.clockwise", help: "Reload (⌘R)") {
+                    if let id = store.activeTabId { web.reload(in: id) }
+                }
             }
         }
         .frame(height: Self.topRowHeight)

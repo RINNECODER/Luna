@@ -945,8 +945,7 @@ struct SmartSearchView: View {
 
     private func performSearch(_ query: String) {
         withAnimation(.easeOut(duration: 0.15)) { viewState = .searching }
-        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        if let url = URL(string: "https://www.google.com/search?q=\(encoded)") {
+        if let url = SearchEngine.current.searchURL(for: query) {
             onNavigate(url)
         }
     }

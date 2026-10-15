@@ -49,4 +49,8 @@ enum ChromePrefs {
     static let roundedFrame = "luna_rounded_frame"
     static let showHomeButton = "luna_show_home_button"
     static let hideWindowButtons = "luna_hide_window_buttons"
+    /// Sidebar layout: a toolbar row (navigation, address field, buttons) above the page.
+    static let showToolbar = "luna_show_toolbar"
+    /// A row of the profile's bookmarks above the page.
+    static let showBookmarksBar = "luna_show_bookmarks_bar"
 }
