@@ -279,10 +279,23 @@ final class KeyGrabber {
         return LLMPolicy()
     }
 
+    /// One grab per web view: the capture handler is registered per page controller, so a second
+    /// concurrent grab would replace the first one's handler.
+    private static let claimLock = NSLock()
+    private static var claimed: Set<ObjectIdentifier> = []
+    private static func claim(_ webView: WKWebView) -> Bool {
+        claimLock.lock(); defer { claimLock.unlock() }
+        return claimed.insert(ObjectIdentifier(webView)).inserted
+    }
+    private static func release(_ webView: WKWebView) {
+        claimLock.lock(); defer { claimLock.unlock() }
+        claimed.remove(ObjectIdentifier(webView))
+    }
+
     static func defaultKeyName(_ date: Date = Date()) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyyMMdd"
+        f.dateFormat = "yyyyMMdd-HHmmss"
         return "luna-" + f.string(from: date)
     }
 
@@ -299,6 +312,11 @@ final class KeyGrabber {
               maxSteps: Int = 30, onEvent: (AgentEvent) -> Void = { _ in }) async -> GrabResult {
         let account = "\(service.id)/\(keyName)"
         var result = GrabResult(status: .failed, service: service.name, keyName: keyName, message: "")
+        guard Self.claim(webView) else {
+            result.message = "Another key grab is already running in this tab. Wait for it to finish."
+            return result
+        }
+        defer { Self.release(webView) }
         let oldURL = webView.url
         navigate(service.url)
         await LunaToolbox.waitForNavigationStart(webView, from: oldURL)

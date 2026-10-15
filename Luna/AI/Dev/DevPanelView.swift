@@ -7,6 +7,8 @@ import SwiftUI
 struct DevPanelView: View {
     let fontSize: CGFloat
     var onOpenSettings: () -> Void
+    /// Opens a web link in a Luna tab; falls back to the default browser when not provided.
+    var onOpenLink: ((URL) -> Void)?
 
     @AppStorage(DevPrefs.agentKey) private var agentRaw: String = AgentCLIKind.claudeCode.rawValue
     @AppStorage(DevPrefs.projectKey) private var projectPath: String = ""
@@ -255,6 +257,12 @@ struct DevPanelView: View {
         return false
     }
 
+    /// Model output may carry javascript:/file:/custom-scheme links; only http(s) is ever opened.
+    static func isWebLink(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
+
     @ViewBuilder
     private func itemView(_ item: DevThreadState.Item, thread: DevThreadState) -> some View {
         switch item {
@@ -262,7 +270,10 @@ struct DevPanelView: View {
             PanelMessageRow(message: ChatMessage(role: .user, text: text), fontSize: fontSize)
         case .assistant(let text, _):
             PanelMessageRow(message: ChatMessage(role: .assistant, text: text), fontSize: fontSize,
-                            onLinkTapped: { NSWorkspace.shared.open($0) })
+                            onLinkTapped: { url in
+                                guard Self.isWebLink(url) else { return }
+                                if let onOpenLink { onOpenLink(url) } else { NSWorkspace.shared.open(url) }
+                            })
         case .tool(let card):
             DevToolCardView(card: card)
         case .approval(let card):

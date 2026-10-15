@@ -78,7 +78,7 @@ struct CommandSurfaceView: View {
             panelHeader()
             if DevMode.isDevBuild { modeSwitch() }
             if isDevMode {
-                DevPanelView(fontSize: chatFontSize, onOpenSettings: openConnectAgents)
+                DevPanelView(fontSize: chatFontSize, onOpenSettings: openConnectAgents, onOpenLink: openLinkInNewTab)
             } else {
                 conversationStream()
                 MCPApprovalStack()

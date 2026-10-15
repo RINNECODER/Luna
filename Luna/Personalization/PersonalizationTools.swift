@@ -268,9 +268,11 @@ enum PersonalizationTools {
     }
 
     private static func uuids(_ call: LunaToolCall, _ key: String) throws -> [UUID] {
-        try ids(call, key).map { raw in
+        var seen = Set<UUID>()
+        // A repeated id would be moved twice; keep the first occurrence.
+        return try ids(call, key).compactMap { raw in
             guard let id = UUID(uuidString: raw) else { throw LunaToolError.invalidArguments("'\(raw)' is not a tab id. Call tabs_list.") }
-            return id
+            return seen.insert(id).inserted ? id : nil
         }
     }
 
@@ -287,8 +289,11 @@ enum PersonalizationTools {
     }
 
     /// The site to add, named from history when the caller gave no title.
+    static let maxTitleLength = 200
+
     private static func requestedSite(_ call: LunaToolCall) throws -> CustomizationPlan.Site {
-        let site = CustomizationPlan.Site(url: try call.url("url"), title: call.string("title"))
+        let title = call.string("title").map { String($0.prefix(Self.maxTitleLength)) }
+        let site = CustomizationPlan.Site(url: try call.url("url"), title: title)
         return call.host.personalization?.named(site) ?? site
     }
 

@@ -20,6 +20,16 @@ nonisolated final class PTYSession: @unchecked Sendable {
     private let lock = NSLock()
     private var onExit: (@Sendable (Int32) -> Void)?
 
+    /// Set once the child has been reaped. Shared with the exit handler and the SIGKILL fallback,
+    /// which both outlive this object, so a signal is never sent to a recycled pid.
+    private final class ReapState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        var reaped: Bool { lock.lock(); defer { lock.unlock() }; return done }
+        func markReaped() { lock.lock(); done = true; lock.unlock() }
+    }
+    private let reapState = ReapState()
+
     /// `executable` may be a bare name; it is looked up on the login PATH.
     init(executable: String, arguments: [String] = [], workingDirectory: URL, environment: [String: String]? = nil) {
         self.executable = executable
@@ -105,10 +115,12 @@ nonisolated final class PTYSession: @unchecked Sendable {
         readSource = read
         read.resume()
 
+        let reapState = self.reapState
         let exit = DispatchSource.makeProcessSource(identifier: child, eventMask: .exit, queue: queue)
         exit.setEventHandler { [weak self] in
             var status: Int32 = 0
             waitpid(child, &status, 0)
+            reapState.markReaped()
             exit.cancel()
             guard let self else { return }
             self.lock.lock(); let handler = self.onExit; self.onExit = nil; self.lock.unlock()
@@ -143,13 +155,17 @@ nonisolated final class PTYSession: @unchecked Sendable {
     }
 
     /// SIGHUP to the child's process group (like closing a Terminal tab), SIGKILL after `grace`.
+    /// The exit source (which deliberately outlives this object) reaps the child, so it never
+    /// lingers as a zombie; the fallback does not touch `self`.
     func terminate(grace: TimeInterval = 2) {
         guard pid > 0 else { return }
         let target = pid
+        let state = reapState
+        guard !state.reaped else { return }
         kill(-target, SIGHUP)
         kill(target, SIGHUP)
         DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
-            if kill(target, 0) == 0 { kill(-target, SIGKILL); kill(target, SIGKILL) }
+            if !state.reaped { kill(-target, SIGKILL); kill(target, SIGKILL) }
         }
     }
 
@@ -158,7 +174,8 @@ nonisolated final class PTYSession: @unchecked Sendable {
     }
 
     deinit {
+        // The exit source is left running on purpose: cancelling it here would leave an
+        // unreaped zombie if the child exits later. Its handler cancels it after reaping.
         readSource?.cancel()
-        exitSource?.cancel()
     }
 }

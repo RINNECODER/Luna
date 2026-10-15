@@ -42,22 +42,24 @@ final class SecretVault {
         self.pasteboard = pasteboard
     }
 
-    /// Saves (or replaces) the value, copies it, and returns a handle. The value is not kept in memory.
-    func store(_ value: String, account: String) throws -> Saved {
+    /// Saves the value under a new account, copies it, and returns a handle. An existing account is
+    /// never overwritten: the name gets `-2`, `-3`… instead. The value is not kept in memory.
+    func store(_ value: String, account requested: String) throws -> Saved {
         let data = Data(value.utf8)
-        let match: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: service, kSecAttrAccount as String: account]
-        let update = SecItemUpdate(match as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if update == errSecItemNotFound {
-            var add = match
+        var account = requested
+        var suffix = 1
+        while true {
+            var add: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                      kSecAttrService as String: service, kSecAttrAccount as String: account]
             add[kSecValueData as String] = data
             add[kSecAttrLabel as String] = "\(service): \(account)"
             add[kSecAttrDescription as String] = "API key saved by Luna"
             add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlocked
             let status = SecItemAdd(add as CFDictionary, nil)
-            guard status == errSecSuccess else { throw VaultError.keychain(status) }
-        } else if update != errSecSuccess {
-            throw VaultError.keychain(update)
+            if status == errSecSuccess { break }
+            guard status == errSecDuplicateItem, suffix < 1000 else { throw VaultError.keychain(status) }
+            suffix += 1
+            account = "\(requested)-\(suffix)"
         }
         putOnPasteboard(value)
         let handle = "‹secret:\(nextHandle)›"
@@ -108,6 +110,9 @@ final class SecretVault {
     private func putOnPasteboard(_ value: String) {
         pasteboard.clearContents()
         pasteboard.setString(value, forType: .string)
+        // Clipboard managers skip items carrying these markers (nspasteboard.org).
+        pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"))
+        pasteboard.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
         guard UserDefaults.standard.bool(forKey: Self.autoClearKey) else { return }
         let count = pasteboard.changeCount
         let board = pasteboard

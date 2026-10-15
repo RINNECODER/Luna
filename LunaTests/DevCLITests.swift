@@ -364,4 +364,32 @@ final class DevCLITests: XCTestCase {
         XCTAssertTrue(output.contains("ttys"), "child should own the pty as its controlling terminal: \(output)")
         XCTAssertTrue(output.contains("33 91"), "window size applied: \(output)")
     }
+
+    func testPTYTerminateReapsChildEvenWhenSessionIsReleased() async throws {
+        var pid: pid_t = 0
+        do {
+            let pty = PTYSession(executable: "/bin/sh", arguments: ["-c", "trap '' HUP; while :; do sleep 1; done"],
+                                 workingDirectory: URL(fileURLWithPath: "/tmp"))
+            try pty.start()
+            pid = pty.pid
+            try await Task.sleep(nanoseconds: 300_000_000)
+            pty.terminate(grace: 0.3)
+        }
+        var gone = false
+        for _ in 0..<40 {
+            // WNOWAIT peeks without reaping, so the test cannot hide a zombie by reaping it itself.
+            var info = siginfo_t()
+            if waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == -1, errno == ECHILD { gone = true; break }
+            try await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertTrue(gone, "child \(pid) should be reaped (no zombie) after terminate")
+    }
+
+    func testDevPanelOpensOnlyWebLinks() {
+        XCTAssertTrue(DevPanelView.isWebLink(URL(string: "https://example.com/a")!))
+        XCTAssertTrue(DevPanelView.isWebLink(URL(string: "HTTP://example.com")!))
+        for bad in ["file:///etc/passwd", "javascript:alert(1)", "x-apple.systempreferences:com.apple.preference", "data:text/html,hi", "ssh://h"] {
+            XCTAssertFalse(DevPanelView.isWebLink(URL(string: bad)!), bad)
+        }
+    }
 }

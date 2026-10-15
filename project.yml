@@ -112,6 +112,8 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Luna Dev
         INFOPLIST_KEY_CFBundleName: Luna Dev
         ENABLE_APP_SANDBOX: NO
+        # Its own keychain access group: the default one is tied to com.luna.browser.
+        CODE_SIGN_ENTITLEMENTS: Luna/LunaDev.entitlements
       configs:
         Debug:
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "LUNA_DEV $(inherited)"

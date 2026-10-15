@@ -160,8 +160,37 @@ enum AgentRedaction {
         return out
     }
 
+    private static let sensitiveParam = try? NSRegularExpression(
+        pattern: "code|token|key|secret|sig|signature|auth|session|password|passwd|pwd|credential",
+        options: .caseInsensitive)
+
+    /// Keeps scheme, host and path; masks the fragment and query values that look secret
+    /// (sensitive parameter names, or values the detector flags). Parameter names stay.
+    static func redactURL(_ urlString: String) -> String {
+        guard !urlString.isEmpty, var parts = URLComponents(string: urlString) else { return redact(urlString) }
+        func sensitive(_ name: String) -> Bool {
+            sensitiveParam?.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil
+        }
+        func flagged(_ value: String, _ name: String) -> Bool {
+            sensitive(name) || redact(value, label: name) != value
+        }
+        if let items = parts.percentEncodedQueryItems {
+            parts.percentEncodedQueryItems = items.map { item in
+                guard let value = item.value, !value.isEmpty else { return item }
+                let decoded = value.removingPercentEncoding ?? value
+                return flagged(decoded, item.name) ? URLQueryItem(name: item.name, value: "REDACTED") : item
+            }
+        }
+        // A fragment is often an OAuth/magic-link payload (#access_token=…); drop it entirely.
+        if let fragment = parts.fragment, !fragment.isEmpty { parts.fragment = "REDACTED" }
+        parts.user = nil
+        parts.password = nil
+        return redact(parts.string ?? urlString)
+    }
+
     static func redact(_ snapshot: PageSnapshot) -> PageSnapshot {
         var s = snapshot
+        s.url = redactURL(s.url)
         s.title = redact(s.title)
         s.text = redact(s.text)
         s.actions = s.actions.map { a in

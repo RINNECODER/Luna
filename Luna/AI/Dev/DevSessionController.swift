@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 
@@ -46,6 +47,13 @@ final class DevSessionController {
     private var resumeStore = AgentCLIResumeStore()
 
     var isRunning: Bool { thread?.isAlive == true }
+
+    private init() {
+        // A quitting Luna must not leave the CLI (and its tools) running.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { DevSessionController.shared.stop() }
+        }
+    }
 
     func isInstalled(_ kind: AgentCLIKind) -> Bool? {
         installed[kind].map { !$0.isEmpty }

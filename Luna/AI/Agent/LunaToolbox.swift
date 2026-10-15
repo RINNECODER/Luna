@@ -208,18 +208,23 @@ final class LunaToolbox {
     func tool(named name: String) -> LunaTool? { tools.first { $0.name == name } }
 
     /// The approval card's text for a call: the tool's own preview, when it has one.
-    func preview(_ name: String, arguments: [String: JSONValue]) -> String? {
-        guard let tool = tool(named: name), let preview = tool.preview, let host = hostProvider() else { return nil }
+    /// Pass the `host` from `currentHost()` so the preview and the later `call` use the same window.
+    func preview(_ name: String, arguments: [String: JSONValue], host resolved: AgentBrowserHost? = nil) -> String? {
+        guard let tool = tool(named: name), let preview = tool.preview, let host = resolved ?? hostProvider() else { return nil }
         return AgentRedaction.redact(preview(LunaToolCall(arguments: arguments, host: host)))
     }
 
+    /// The window tool calls act on right now; resolve it once before asking for approval.
+    func currentHost() -> AgentBrowserHost? { hostProvider() }
+
     /// Runs a tool. Unknown names throw; bad arguments and tool failures come back as
     /// `isError` results so a model can correct itself. All output is redacted here.
-    func call(_ name: String, arguments: [String: JSONValue], source: String = "Luna") async throws -> LunaToolResult {
+    func call(_ name: String, arguments: [String: JSONValue], source: String = "Luna",
+              host resolved: AgentBrowserHost? = nil) async throws -> LunaToolResult {
         guard let tool = tool(named: name) else { throw LunaToolError.unknownTool(name) }
         do {
             try tool.validate(arguments)
-            guard let host = hostProvider() else { throw LunaToolError.unavailable("No Luna browser window is open.") }
+            guard let host = resolved ?? hostProvider() else { throw LunaToolError.unavailable("No Luna browser window is open.") }
             let text = try await tool.run(LunaToolCall(arguments: arguments, host: host, source: source))
             return LunaToolResult(text: AgentRedaction.redact(text), isError: false)
         } catch {

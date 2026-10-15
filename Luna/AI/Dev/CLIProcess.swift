@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Splits a byte stream into newline-delimited records (NDJSON). Chunks may end mid-line or
@@ -90,6 +91,8 @@ nonisolated final class CLIProcess: @unchecked Sendable {
     private let lock = NSLock()
     /// Separate from `lock` so a blocked stdin write never stalls stdout draining.
     private let writeLock = NSLock()
+    /// Serial queue for the blocking stdin write, so a full pipe never stalls the caller (the MainActor).
+    private let writeQueue = DispatchQueue(label: "luna.cli.stdin")
     private var framer = NDJSONFramer()
     private var stderr = BoundedBuffer()
     private var terminationRequested = false
@@ -159,21 +162,33 @@ nonisolated final class CLIProcess: @unchecked Sendable {
         }
     }
 
-    /// Writes one record; a newline is appended if missing. False once stdin is closed.
+    /// Queues one record; a newline is appended if missing. False once stdin is closed.
+    /// The write itself runs on a background queue; a failure surfaces as the process exiting.
     @discardableResult
     func write(_ line: Data) -> Bool {
-        writeLock.lock(); defer { writeLock.unlock() }
-        guard !stdinClosed, process.isRunning else { return false }
+        writeLock.lock()
+        let open = !stdinClosed && process.isRunning
+        writeLock.unlock()
+        guard open else { return false }
         var data = line
         if data.last != 0x0A { data.append(0x0A) }
-        do { try stdinPipe.fileHandleForWriting.write(contentsOf: data); return true } catch { return false }
+        let handle = stdinPipe.fileHandleForWriting
+        writeQueue.async { [weak self] in
+            guard let self else { return }
+            self.writeLock.lock(); let closed = self.stdinClosed; self.writeLock.unlock()
+            if !closed { try? handle.write(contentsOf: data) }
+        }
+        return true
     }
 
     func closeStdin() {
-        writeLock.lock(); defer { writeLock.unlock() }
-        guard !stdinClosed else { return }
+        writeLock.lock()
+        guard !stdinClosed else { writeLock.unlock(); return }
         stdinClosed = true
-        try? stdinPipe.fileHandleForWriting.close()
+        writeLock.unlock()
+        let handle = stdinPipe.fileHandleForWriting
+        // Behind any queued writes, which were accepted before the close.
+        writeQueue.async { try? handle.close() }
     }
 
     /// SIGINT, like Ctrl-C.
@@ -182,16 +197,38 @@ nonisolated final class CLIProcess: @unchecked Sendable {
         kill(process.processIdentifier, SIGINT)
     }
 
-    /// Closes stdin, sends SIGTERM, then SIGKILL after `grace` if it is still alive.
+    /// Closes stdin, sends SIGTERM to the process and its descendants, then SIGKILL after `grace`
+    /// if any are still alive. `Process` cannot start a new process group, so the tree is walked
+    /// instead of `kill(-pgid)`. The fallback holds the `Process`, not `self`.
     func terminate(grace: TimeInterval = 3) {
         lock.lock(); terminationRequested = true; lock.unlock()
         closeStdin()
         guard process.isRunning else { return }
         let pid = process.processIdentifier
+        let process = self.process
+        let tree = Self.descendants(of: pid)
         process.terminate()
-        DispatchQueue.global().asyncAfter(deadline: .now() + grace) { [weak self] in
-            if self?.process.isRunning == true { kill(pid, SIGKILL) }
+        for child in tree { kill(child, SIGTERM) }
+        DispatchQueue.global().asyncAfter(deadline: .now() + grace) {
+            let late = Self.descendants(of: pid)
+            if process.isRunning { kill(pid, SIGKILL) }
+            for child in Set(tree + late) where kill(child, 0) == 0 { kill(child, SIGKILL) }
         }
+    }
+
+    /// All live descendants of `pid` (libproc), children first.
+    static func descendants(of pid: Int32) -> [Int32] {
+        var found: [Int32] = []
+        var queue: [Int32] = [pid]
+        while let next = queue.popLast(), found.count < 512 {
+            var buffer = [Int32](repeating: 0, count: 256)
+            let bytes = proc_listchildpids(next, &buffer, Int32(buffer.count * MemoryLayout<Int32>.size))
+            guard bytes > 0 else { continue }
+            let kids = buffer.prefix(Int(bytes) / MemoryLayout<Int32>.size).filter { $0 > 0 }
+            found += kids
+            queue += kids
+        }
+        return found
     }
 
     var stderrTail: String { lock.lock(); defer { lock.unlock() }; return stderr.text }

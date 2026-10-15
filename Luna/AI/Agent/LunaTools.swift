@@ -15,7 +15,7 @@ enum LunaTools {
     ) { call in
         let tabs = call.host.tabs
         if tabs.isEmpty { return "No tabs." }
-        return tabs.map { "\($0.active ? "*" : " ") \($0.id.uuidString)\t\($0.title.isEmpty ? "(untitled)" : $0.title)\t\($0.url)" }
+        return tabs.map { "\($0.active ? "*" : " ") \($0.id.uuidString)\t\($0.title.isEmpty ? "(untitled)" : $0.title)\t\(AgentRedaction.redactURL($0.url))" }
             .joined(separator: "\n")
     }
 

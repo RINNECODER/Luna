@@ -255,6 +255,37 @@ final class KeyGrabberTests: XCTestCase {
         XCTAssertNil(CommandSurfaceView.grabRequest(in: "/grab "))
     }
 
+    func testStoreNeverOverwritesAnExistingAccount() throws {
+        let first = try vault.store("first-value", account: "openai/luna-x")
+        let second = try vault.store("second-value", account: "openai/luna-x")
+        let third = try vault.store("third-value", account: "openai/luna-x")
+        XCTAssertEqual([first.account, second.account, third.account], ["openai/luna-x", "openai/luna-x-2", "openai/luna-x-3"])
+        XCTAssertEqual(vault.value(account: "openai/luna-x"), "first-value")
+        XCTAssertEqual(vault.value(account: "openai/luna-x-2"), "second-value")
+        XCTAssertEqual(vault.items().count, 3)
+        XCTAssertNotNil(board.data(forType: NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")))
+    }
+
+    func testDefaultKeyNameIncludesTime() {
+        var c = DateComponents(year: 2026, month: 10, day: 15, hour: 9, minute: 8, second: 7)
+        c.calendar = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone.current
+        XCTAssertEqual(KeyGrabber.defaultKeyName(c.date!), "luna-20261015-090807")
+    }
+
+    func testURLRedactionMasksSecretsKeepsShape() {
+        let url = "https://app.example.com/auth/callback?code=abc123&state=xyz&page=2&q=hello#access_token=eyJhbGciOi"
+        let out = AgentRedaction.redactURL(url)
+        XCTAssertTrue(out.hasPrefix("https://app.example.com/auth/callback?"), out)
+        XCTAssertFalse(out.contains("abc123"), out)
+        XCTAssertFalse(out.contains("eyJhbGciOi"), out)
+        XCTAssertTrue(out.contains("page=2") && out.contains("q=hello"), out)
+        XCTAssertTrue(out.contains("code=REDACTED") && out.contains("state=xyz"), out)
+        let flagged = AgentRedaction.redactURL("https://x.example.com/p?blob=sk-proj-" + String(repeating: "a1B2", count: 12))
+        XCTAssertFalse(flagged.contains("a1B2a1B2"), flagged)
+        XCTAssertEqual(AgentRedaction.redactURL("https://example.com/a/b"), "https://example.com/a/b")
+    }
+
     // MARK: Fixtures with the chat-model policy (no network)
 
     /// The full loop with the LLM fallback, on the sk-proj- fixture: the key lands in the Keychain

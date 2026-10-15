@@ -253,6 +253,21 @@ final class PersonalizationTests: XCTestCase {
         XCTAssertTrue(context.bookmarks.bookmarks.isEmpty)
     }
 
+    func testTitlesAreCappedAndRepeatedTabIdsCollapse() async throws {
+        let store = context.workspace!
+        let ids = ["a", "b"].map { store.newTab(url: URL(string: "https://\($0).example.com/")!) }
+        let a = ids[0].uuidString
+        let one = try await toolbox.call("tabs_group", arguments: ["tab_ids": .array([.string(a), .string(a)]), "name": "Dup"])
+        XCTAssertTrue(one.isError, "the same tab twice is one tab: \(one.text)")
+        let two = try await toolbox.call("tabs_group", arguments: ["tab_ids": .array([a, ids[1].uuidString, a].map { .string($0) }), "name": "Ok"])
+        XCTAssertFalse(two.isError, two.text)
+
+        let long = String(repeating: "t", count: 5000)
+        let added = try await toolbox.call("bookmarks_add", arguments: ["url": "https://long.example.com", "title": .string(long)])
+        XCTAssertFalse(added.isError, added.text)
+        XCTAssertEqual(context.bookmarks.bookmarks.first?.title.count, PersonalizationTools.maxTitleLength)
+    }
+
     func testBookmarksAreNamedFromHistoryTitles() async throws {
         defaults.set(true, forKey: PersonalizationPrefs.enabledKey)
         visit("https://news.ycombinator.com/item?id=1", daysAgo: 2, title: "Show HN: A thing")
