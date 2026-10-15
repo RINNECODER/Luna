@@ -9,7 +9,7 @@ import XCTest
 /// measures Jev's decisions and Luna's page driver, not a chat model.
 @MainActor
 final class ComputerUseLiveTests: XCTestCase {
-    private static let fixture = """
+    static let fixture = """
     <!doctype html><html><head><meta charset="utf-8"><title>Luna Library</title>
     <style>body{font:16px -apple-system,sans-serif;margin:24px} label{display:block;margin:10px 0}</style></head>
     <body><main id="app">
