@@ -11,6 +11,9 @@ final class ComputerUseAgent {
     let policy: AgentPolicy
     let textProvider: FieldTextProviding
     let maxSteps: Int
+    /// Checked before every model call; a non-nil outcome ends the run without asking the model.
+    /// The key grabber uses it to stop the moment a key is captured or a sign-in page appears.
+    var shouldStop: () -> AgentOutcome? = { nil }
 
     init(driver: AgentPageDriving, policy: AgentPolicy,
          textProvider: FieldTextProviding = LLMFieldTextProvider(), maxSteps: Int = AgentPrompts.maxSteps) {
@@ -66,6 +69,7 @@ final class ComputerUseAgent {
                 try Task.checkCancellation()
                 if calls >= maxSteps * 2 { return finish(.blocked("Reached the model-call budget.")) }
                 if !(await driver.isFresh(page, for: nil)) { page = try await observe() }
+                if let stop = shouldStop() { return finish(stop) }
                 let decision = try await policy.decide(snapshot: page, goal: goal, history: history)
                 calls += 1
                 try Task.checkCancellation()

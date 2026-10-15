@@ -128,12 +128,13 @@ struct PageSnapshot: Codable, Equatable {
 }
 
 /// Single place where page content leaves the page for a model (Jev, the chat model, or an
-/// outside agent over MCP). Masks well-known API key and token formats so a page that shows
-/// a secret never hands it to a model. Freshness markers are computed in the page and untouched.
+/// outside agent over MCP). Masks well-known API key and token formats, plus generic
+/// random-looking keys (see `SecretDetector` for the rule), so a page that shows a secret
+/// never hands it to a model. Freshness markers are computed in the page and untouched.
 enum AgentRedaction {
     static let mask = "[redacted secret]"
 
-    private static let secretPattern: NSRegularExpression? = try? NSRegularExpression(pattern: [
+    static let knownFormats = [
         #"\bsk-[A-Za-z0-9_-]{20,}"#,                                   // OpenAI / Anthropic
         #"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}"#,             // Stripe
         #"\bgh[pousr]_[A-Za-z0-9]{30,}"#, #"\bgithub_pat_[A-Za-z0-9_]{30,}"#,
@@ -141,22 +142,34 @@ enum AgentRedaction {
         #"\bAIza[0-9A-Za-z_-]{35}"#,                                   // Google
         #"\bxox[abposr]-[A-Za-z0-9-]{10,}"#,                           // Slack
         #"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"#, // JWT
-    ].joined(separator: "|"))
+        #"\bhf_[A-Za-z0-9]{30,}"#,                                     // Hugging Face
+        #"\br8_[A-Za-z0-9]{30,}"#,                                     // Replicate
+        #"\bgsk_[A-Za-z0-9]{30,}"#,                                    // Groq
+    ]
 
-    static func redact(_ text: String) -> String {
+    private static let secretPattern: NSRegularExpression? = try? NSRegularExpression(pattern: knownFormats.joined(separator: "|"))
+
+    /// `label` is context for a lone value (a field's label), so a token under "API token" is masked.
+    static func redact(_ text: String, label: String = "") -> String {
         guard let secretPattern, !text.isEmpty else { return text }
-        return secretPattern.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
-                                                      withTemplate: mask)
+        var out = secretPattern.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text),
+                                                         withTemplate: mask)
+        for range in SecretDetector.secretRanges(in: out, label: label).reversed() {
+            out.replaceSubrange(range, with: mask)
+        }
+        return out
     }
 
     static func redact(_ snapshot: PageSnapshot) -> PageSnapshot {
         var s = snapshot
+        s.title = redact(s.title)
         s.text = redact(s.text)
         s.actions = s.actions.map { a in
             var a = a
+            let label = a.label
             a.label = redact(a.label)
-            a.value = a.value.map(redact)
-            a.currentValue = a.currentValue.map(redact)
+            a.value = a.value.map { redact($0, label: label) }
+            a.currentValue = a.currentValue.map { redact($0, label: label) }
             return a
         }
         return s

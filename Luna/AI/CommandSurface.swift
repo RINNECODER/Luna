@@ -1,6 +1,7 @@
 // Luma MVP - AI Side Panel (redesigned for clarity, calmness, accessibility)
 import Foundation
 import SwiftUI
+import WebKit
 import AppKit
 import PDFKit
 import UniformTypeIdentifiers
@@ -39,6 +40,8 @@ struct CommandSurfaceView: View {
     /// Incremented whenever a stream starts or is cancelled; stale callbacks compare
     /// their captured generation against this and bail out.
     @State private var streamGeneration: Int = 0
+    /// A `/grab` paused on a sign-in page; Resume runs it again.
+    @State private var pendingGrab: (service: KeyService, keyName: String)? = nil
     @FocusState private var isInputFocused: Bool
 
     @State private var pageTitle: String? = nil
@@ -189,6 +192,15 @@ struct CommandSurfaceView: View {
                         }
                         if let err = errorMessage {
                             errorInlineView(message: err)
+                        }
+                        if let grab = pendingGrab, !isSending {
+                            HStack(spacing: 8) {
+                                Text("Sign in to \(grab.service.name) in this tab, then resume.")
+                                    .font(.callout).foregroundStyle(.secondary)
+                                Button("Resume") { runGrab(service: grab.service, keyName: grab.keyName, command: nil) }
+                                Button("Cancel") { pendingGrab = nil }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                 }
@@ -548,6 +560,14 @@ struct CommandSurfaceView: View {
             runAgent(goal: goal, command: trimmed)
             return
         }
+        if let grab = Self.grabRequest(in: trimmed) {
+            guard let service = KeyService.resolve(grab.service) else {
+                errorMessage = "Usage: /grab <service> [key name]"
+                return
+            }
+            runGrab(service: service, keyName: grab.keyName ?? KeyGrabber.defaultKeyName(), command: trimmed)
+            return
+        }
 
         if let tabManager = webViewWrapper.tabManager,
            let response = commandRouter.proposal(for: trimmed, tabManager: tabManager) {
@@ -580,6 +600,56 @@ struct CommandSurfaceView: View {
         guard input.lowercased().hasPrefix("/agent ") else { return nil }
         let goal = input.dropFirst("/agent ".count).trimmingCharacters(in: .whitespacesAndNewlines)
         return goal.isEmpty ? nil : goal
+    }
+
+    /// `/grab <service> [key name]`. A multi-word service ("hugging face") wins over a key name.
+    static func grabRequest(in input: String) -> (service: String, keyName: String?)? {
+        guard input.lowercased().hasPrefix("/grab ") else { return nil }
+        let words = input.dropFirst("/grab ".count).split(separator: " ").map(String.init)
+        guard !words.isEmpty else { return nil }
+        for i in stride(from: words.count, through: 1, by: -1) {
+            let name = words[0..<i].joined(separator: " ")
+            if KeyService.resolve(name)?.known == true {
+                return (name, i < words.count ? words[i...].joined(separator: " ") : nil)
+            }
+        }
+        return (words[0], words.count > 1 ? words[1...].joined(separator: " ") : nil)
+    }
+
+    /// Runs the key grabber on this tab. The key goes to the Keychain and clipboard only;
+    /// the panel shows the agent's steps and where the key was saved, never the value.
+    private func runGrab(service: KeyService, keyName: String, command: String?) {
+        guard let webView = tabId.flatMap(webViewWrapper.webViewIfLoaded) ?? webViewWrapper.activeWebView else {
+            errorMessage = "Open a page in this tab first."
+            return
+        }
+        pendingGrab = nil
+        isSending = true
+        errorMessage = nil
+        if let command {
+            messages.append(ChatMessage(role: .user, text: command))
+            inputText = ""
+        }
+        let reply = ChatMessage(role: .assistant, text: "Getting a \(service.name) API key named “\(keyName)”…\n")
+        messages.append(reply)
+        let replyId = reply.id
+        streamGeneration += 1
+        let generation = streamGeneration
+        streamingTask = Task {
+            let append: (String) -> Void = { line in
+                guard generation == streamGeneration,
+                      let idx = messages.firstIndex(where: { $0.id == replyId }) else { return }
+                messages[idx].text += "\n" + line
+            }
+            let result = await KeyGrabber.shared.grab(service: service, keyName: keyName, webView: webView,
+                                                      navigate: { webView.load(URLRequest(url: $0)) },
+                                                      onEvent: { if let line = $0.panelLine { append(line) } })
+            guard generation == streamGeneration else { return }
+            append("\n**\(result.message)**")
+            if result.status == .waitingForSignIn { pendingGrab = (service, keyName) }
+            isSending = false
+            streamingTask = nil
+        }
     }
 
     /// Streams each agent step into one assistant message. Stop cancels the run.
