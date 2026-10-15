@@ -291,6 +291,43 @@ final class WorkspaceTests: XCTestCase {
         assertValid(store)
     }
 
+    func testMovingATabBetweenWindowsKeepsItsStateAndSelectsANeighbour() {
+        let source = makeStore()
+        let a = source.newTab(url: url("a"))
+        let b = source.newTab(url: url("b"))
+        let c = source.newTab(url: url("c"))
+        _ = source.splitTab(c, onto: b)
+        source.activate(b)
+        var tab = try! XCTUnwrap(source.takeTab(b))
+        tab.interactionState = Data([1, 2, 3])
+        XCTAssertEqual(source.orderedTabIds, [a, c])
+        XCTAssertEqual(source.activeTabId, c, "the split partner stays on screen")
+        XCTAssertTrue(source.workspace.archive.isEmpty, "moving isn't closing")
+        assertValid(source)
+
+        let dest = makeStore()
+        let blank = dest.newTab(url: nil)
+        dest.adopt(tab)
+        XCTAssertEqual(dest.orderedTabIds, [blank, b])
+        XCTAssertEqual(dest.activeTabId, b)
+        XCTAssertEqual(dest.tab(b)?.url, url("b"))
+        XCTAssertEqual(dest.tab(b)?.interactionState, Data([1, 2, 3]))
+        assertValid(dest)
+    }
+
+    func testWindowWorkspaceSavesAndReloads() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("luna-window-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let persistence = WorkspacePersistence(fileURL: dir.appendingPathComponent("window-x.json"))
+        let store = WorkspaceStore(persistence: persistence)
+        let t = store.newTab(url: url("torn"))
+        store.flush()
+        let reloaded = WorkspaceStore(persistence: persistence)
+        XCTAssertEqual(reloaded.orderedTabIds, [t])
+        XCTAssertEqual(reloaded.activeTabId, t)
+    }
+
     func testSplitRatiosNormalize() {
         let store = makeStore()
         let a = store.newTab(url: url("a"))

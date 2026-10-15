@@ -92,7 +92,7 @@ struct SidebarView: View {
                     actions.newTab()
                 }
             }
-            ExtensionButtons(host: extensions, maxVisible: 2)
+            SidebarMoreMenu(extensions: extensions)
             ToolbarIconButton(systemName: "arrow.down.circle", help: "Downloads", action: onShowDownloads)
         }
         .frame(height: 28)
@@ -198,6 +198,32 @@ private struct FavoriteDrop: DropDelegate {
             DispatchQueue.main.async { action(id) }
         }
         return true
+    }
+}
+
+// MARK: - ⋯ menu
+
+/// Sidebar's ⋯ menu: extensions and settings.
+private struct SidebarMoreMenu: View {
+    let extensions: ExtensionHost
+
+    var body: some View {
+        Menu {
+            ExtensionsMenuItems(host: extensions)
+            Divider()
+            SettingsLink { Text("Settings…") }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 26)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .background(PopupAnchor { extensions.menuAnchor = $0 })
+        .help("More")
     }
 }
 

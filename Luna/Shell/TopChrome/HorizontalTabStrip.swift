@@ -1,3 +1,5 @@
+import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -12,11 +14,37 @@ struct HorizontalTabStrip: View {
     let onNewTab: () -> Void
     /// Dropped tab, target tab: open them side by side.
     let onSplit: (UUID, UUID) -> Void
+    /// Tab released outside the window (or well away from the strip), with the
+    /// screen point: move it to its own window (or the window it was dropped on).
+    var onTearOff: ((UUID, CGPoint) -> Void)? = nil
 
-    /// Tab being dragged (set when a drag starts in this strip).
-    @State private var dragging: UUID?
-    /// Tab the drag is resting on the middle of; dropping there splits.
+    /// The tab being dragged: it lifts off the strip and follows the pointer
+    /// while the others slide aside (Helium-style).
+    @State private var drag: TabDrag?
+    /// Each tab's frame in the strip, for hit-testing the drag.
+    @State private var frames: [UUID: CGRect] = [:]
+    /// The strip's origin in window coordinates (drags report window points).
+    @State private var stripOrigin: CGPoint = .zero
+    /// Tab the drag has rested on the middle of; releasing there splits.
     @State private var splitTarget: UUID?
+    /// Pending "rested long enough" timer and the tab it's for.
+    @State private var dwell: (target: UUID, work: DispatchWorkItem)?
+    /// This strip as a drop target for tabs dragged from other windows.
+    @StateObject private var zone = TabStripDropZone()
+    /// Another window's strip the dragged tab is over.
+    @State private var hoveredZone: TabStripDropZone?
+
+    private struct TabDrag {
+        let id: UUID
+        /// Pointer position minus the tab's origin when the drag began.
+        let grab: CGSize
+        var pointer: CGPoint
+        /// Far enough from the strip that letting go tears the tab off.
+        var tearing = false
+    }
+
+    /// How far below (or above) the strip a drag has to go to tear off.
+    private static let tearOffDistance: CGFloat = 50
 
     private static let iconTabWidth: CGFloat = 38
     private static let minTabWidth: CGFloat = 72
@@ -39,32 +67,44 @@ struct HorizontalTabStrip: View {
                             let iconOnly = persistent.contains(id)
                             let tabWidth = iconOnly ? Self.iconTabWidth : width
                             let split = ws.splitGroup(containing: id)
-                            StripTab(
-                                tab: tab,
-                                faviconURL: web.faviconURLByTab[id] ?? nil,
-                                isActive: ws.activeTabId == id,
-                                isLoading: web.loadingProgressByTab[id] != nil,
-                                iconOnly: iconOnly,
-                                showsSeparator: index > 0 && ws.activeTabId != id && ws.activeTabId != ids[index - 1]
-                                    && !(split != nil && split?.panes.contains(ids[index - 1]) == true),
-                                isSplitTarget: splitTarget == id,
-                                inSplit: split != nil,
-                                isVisible: ws.visibleTabIds.contains(id),
-                                onSelect: { onActivate(id) },
-                                onClose: { onClose(id) },
-                                onSplitWithCurrent: ws.activeTabId.flatMap { active in
-                                    active != id && !ws.isFavorite(active) && !ws.isFavorite(id) ? { onSplit(id, active) } : nil
-                                },
-                                onRemoveFromSplit: split.map { _ in { store.removeFromSplit(id) } }
-                            )
-                            .frame(width: tabWidth, height: height)
-                            .onDrag {
-                                dragging = id
-                                return Self.itemProvider(for: id)
-                            }
-                            .onDrop(of: [.lunaNode], delegate: StripDropDelegate(
-                                target: id, width: tabWidth, store: store,
-                                dragging: $dragging, splitTarget: $splitTarget, onSplit: onSplit))
+                            Color.clear
+                                .frame(width: tabWidth, height: height)
+                                .overlay {
+                                    StripTab(
+                                        tab: tab,
+                                        faviconURL: web.faviconURLByTab[id] ?? nil,
+                                        isActive: ws.activeTabId == id,
+                                        isLoading: web.loadingProgressByTab[id] != nil,
+                                        iconOnly: iconOnly,
+                                        showsSeparator: index > 0 && ws.activeTabId != id && ws.activeTabId != ids[index - 1]
+                                            && !(split != nil && split?.panes.contains(ids[index - 1]) == true),
+                                        isSplitTarget: splitTarget == id,
+                                        inSplit: split != nil,
+                                        isVisible: ws.visibleTabIds.contains(id),
+                                        onSelect: { onActivate(id) },
+                                        onClose: { onClose(id) },
+                                        onSplitWithCurrent: ws.activeTabId.flatMap { active in
+                                            active != id && !ws.isFavorite(active) && !ws.isFavorite(id) ? { onSplit(id, active) } : nil
+                                        },
+                                        onRemoveFromSplit: split.map { _ in { store.removeFromSplit(id) } }
+                                    )
+                                    .frame(width: tabWidth, height: height)
+                                    .overlay(TabPressView(
+                                        trailingPassthrough: iconOnly ? 0 : 30,
+                                        onClick: { onActivate(id) },
+                                        onDragChanged: { dragChanged(id, $0) },
+                                        onDragEnded: { dragEnded(id, $0) }
+                                    ))
+                                    .modifier(LiftedTab(offset: liftOffset(for: id), isLifted: drag?.id == id,
+                                                        isTearing: drag?.id == id && drag?.tearing == true))
+                                }
+                                // The slot is measured, not the tab: the lifted tab's offset and scale
+                                // would feed back into its own frame and the offset would never settle.
+                                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .named(Self.space)) }) {
+                                    frames[id] = $0
+                                    zone.frames[id] = $0
+                                }
+                                .zIndex(drag?.id == id ? 1 : 0)
                         }
                     }
                     Button(action: onNewTab) {
@@ -79,11 +119,131 @@ struct HorizontalTabStrip: View {
                     .padding(.leading, 4)
                 }
                 .background(NonDraggableWindowView())
-                .animation(.spring(response: 0.25, dampingFraction: 0.86), value: ids)
+                .background(WindowReader { zone.attach(to: $0, store: store) })
+                .overlay(alignment: .topLeading) {
+                    // Where a tab dragged from another window will land.
+                    if let x = zone.markerX {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color.accentColor)
+                            .frame(width: 2, height: height - 8)
+                            .offset(x: x - 1, y: 4)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .coordinateSpace(.named(Self.space))
+                .onGeometryChange(for: CGRect.self, of: { $0.frame(in: .global) }) {
+                    stripOrigin = $0.origin
+                    zone.bounds = $0
+                }
+                .animation(.spring(response: 0.28, dampingFraction: 0.82), value: ids)
             }
+            // The lifted tab can rise a little out of the strip.
+            .scrollClipDisabled()
             .scrollDisabled(titled == 0 || CGFloat(titled) * Self.minTabWidth <= available)
         }
         .frame(height: height)
+    }
+
+    private static let space = "luna.tabstrip"
+
+    // MARK: Dragging
+
+    /// Where the lifted tab is drawn relative to its slot: under the pointer
+    /// horizontally; vertically it follows with resistance, so it visibly
+    /// comes off the strip without covering the page.
+    private func liftOffset(for id: UUID) -> CGSize {
+        guard let drag, drag.id == id, let frame = frames[id] else { return .zero }
+        let dx = drag.pointer.x - drag.grab.width - frame.minX
+        let rawY = drag.pointer.y - drag.grab.height - frame.minY
+        let dy = (rawY < 0 ? -1 : 1) * min(abs(rawY) * 0.35, 12)
+        return CGSize(width: dx, height: dy)
+    }
+
+    private func dragChanged(_ id: UUID, _ d: TabPressView.Drag) {
+        let point = CGPoint(x: d.windowPoint.x - stripOrigin.x, y: d.windowPoint.y - stripOrigin.y)
+        if drag == nil {
+            guard let frame = frames[id] else { return }
+            onActivate(id)
+            drag = TabDrag(id: id, grab: CGSize(width: point.x - frame.minX, height: point.y - frame.minY), pointer: point)
+            return
+        }
+        drag?.pointer = point
+        // Over another window's strip: it shows where the tab would land.
+        let other = onTearOff == nil ? nil : TabDropTargets.shared.zone(at: d.screenPoint, from: zone.window)
+        if hoveredZone !== other {
+            hoveredZone?.hover(nil)
+            hoveredZone = other
+        }
+        other?.hover(d.screenPoint)
+        let outside = zone.window.map { !$0.frame.contains(d.screenPoint) } ?? false
+        let tearing = onTearOff != nil
+            && (other != nil || outside || point.y < -Self.tearOffDistance || point.y > height + Self.tearOffDistance)
+        if drag?.tearing != tearing {
+            withAnimation(.easeOut(duration: 0.15)) { drag?.tearing = tearing }
+        }
+        // Out of its strip, the tab follows the pointer in a window of its own,
+        // so it stays visible over other windows and the desktop.
+        if tearing, let tab = store.tab(id) {
+            TabDragPreview.shared.show(tab: tab, faviconURL: web.faviconURLByTab[id] ?? nil, at: d.screenPoint)
+        } else {
+            TabDragPreview.shared.hide()
+        }
+        if tearing { disarmSplit() } else { track(id, at: point) }
+    }
+
+    private func dragEnded(_ id: UUID, _ d: TabPressView.Drag) {
+        let tearing = drag?.tearing == true
+        hoveredZone?.hover(nil)
+        hoveredZone = nil
+        TabDragPreview.shared.hide()
+        if let target = splitTarget, !tearing { onSplit(id, target) }
+        dwell?.work.cancel()
+        dwell = nil
+        splitTarget = nil
+        if tearing, let onTearOff {
+            drag = nil
+            onTearOff(id, d.screenPoint)
+            return
+        }
+        // Settle into its slot.
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { drag = nil }
+    }
+
+    /// Reorders live as the dragged tab crosses the edges of the tab under
+    /// the pointer; resting on a tab's middle third arms a split.
+    private func track(_ dragged: UUID, at point: CGPoint) {
+        let live = Set(store.orderedTabIds)
+        guard let (target, frame) = frames.first(where: {
+            $0.key != dragged && live.contains($0.key) && $0.value.minX <= point.x && point.x < $0.value.maxX
+        }) else {
+            disarmSplit()
+            return
+        }
+        let t = (point.x - frame.minX) / max(1, frame.width)
+        var trial = store.workspace
+        if t > 0.3, t < 0.7, frame.width > Self.iconTabWidth, trial.splitTab(dragged, onto: target) != nil {
+            // Already armed, or already waiting on this tab.
+            guard splitTarget != target, dwell?.target != target else { return }
+            disarmSplit()
+            let work = DispatchWorkItem { [target] in
+                withAnimation(.easeOut(duration: 0.12)) { splitTarget = target }
+            }
+            dwell = (target, work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+            return
+        }
+        disarmSplit()
+        let after = t >= 0.5
+        let order = store.orderedTabIds
+        guard let from = order.firstIndex(of: dragged), let to = order.firstIndex(of: target),
+              after ? from != to + 1 : from != to - 1 else { return }
+        store.moveTab(dragged, nextTo: target, after: after)
+    }
+
+    private func disarmSplit() {
+        dwell?.work.cancel()
+        dwell = nil
+        if splitTarget != nil { withAnimation(.easeOut(duration: 0.12)) { splitTarget = nil } }
     }
 
     static func itemProvider(for id: UUID) -> NSItemProvider {
@@ -93,6 +253,145 @@ struct HorizontalTabStrip: View {
             return nil
         }
         return provider
+    }
+}
+
+/// A window's horizontal tab strip as a drop target for tabs dragged out of
+/// other windows (Chrome and Helium do the same): which slot a screen point
+/// falls in, and the insertion marker shown while a tab hovers there.
+final class TabStripDropZone: ObservableObject {
+    private(set) weak var window: NSWindow?
+    private weak var store: WorkspaceStore?
+    /// Tab frames in the strip's own space.
+    var frames: [UUID: CGRect] = [:]
+    /// The strip in the window, top-left origin (SwiftUI `.global`).
+    var bounds: CGRect = .zero
+    /// Strip x of the insertion marker, while another window's tab hovers.
+    @Published private(set) var markerX: CGFloat?
+
+    /// How far above or below the strip still counts as over it.
+    static let slack: CGFloat = 16
+    private static let zones = NSMapTable<NSWindow, TabStripDropZone>.weakToWeakObjects()
+
+    static func zone(for window: NSWindow?) -> TabStripDropZone? {
+        window.flatMap { zones.object(forKey: $0) }
+    }
+
+    func attach(to window: NSWindow?, store: WorkspaceStore) {
+        self.store = store
+        guard let window, self.window !== window else { return }
+        self.window = window
+        Self.zones.setObject(self, forKey: window)
+    }
+
+    /// A screen point in the strip's space, if it's over the strip.
+    func stripPoint(fromScreen p: CGPoint) -> CGPoint? {
+        guard let window, window.isVisible else { return nil }
+        let w = window.convertPoint(fromScreen: p)
+        let local = CGPoint(x: w.x - bounds.minX, y: window.frame.height - w.y - bounds.minY)
+        guard local.x >= 0, local.x <= bounds.width,
+              local.y >= -Self.slack, local.y <= bounds.height + Self.slack else { return nil }
+        return local
+    }
+
+    /// Where a tab dropped at strip x lands: beside which tab, on which side,
+    /// and the x of that edge.
+    func insertion(atX x: CGFloat) -> (target: UUID, after: Bool, edge: CGFloat)? {
+        let slots = (store?.orderedTabIds ?? []).compactMap { id in frames[id].map { (id: id, frame: $0) } }
+        guard let last = slots.last else { return nil }
+        guard let slot = slots.first(where: { x < $0.frame.maxX }) else {
+            return (last.id, true, last.frame.maxX)
+        }
+        let after = x >= slot.frame.midX
+        return (slot.id, after, after ? slot.frame.maxX : slot.frame.minX)
+    }
+
+    func insertion(atScreen p: CGPoint) -> (target: UUID, after: Bool)? {
+        stripPoint(fromScreen: p).flatMap { insertion(atX: $0.x) }.map { ($0.target, $0.after) }
+    }
+
+    /// Shows (or, with nil, hides) the marker for a hovering tab.
+    func hover(_ screenPoint: CGPoint?) {
+        let x = screenPoint.flatMap(stripPoint(fromScreen:)).flatMap { insertion(atX: $0.x)?.edge }
+        if markerX != x { markerX = x }
+    }
+}
+
+/// The tab under the pointer while it's dragged out of its strip: a small
+/// click-through window, so it shows over other windows (Chrome uses a
+/// drag window the same way).
+final class TabDragPreview {
+    static let shared = TabDragPreview()
+    private var panel: NSPanel?
+    private var shownTab: UUID?
+    private static let size = CGSize(width: 200, height: 30)
+
+    func show(tab: Tab, faviconURL: URL?, at screenPoint: CGPoint) {
+        let panel = self.panel ?? makePanel()
+        if shownTab != tab.id {
+            shownTab = tab.id
+            panel.contentView = NSHostingView(rootView: Label(tab: tab, faviconURL: faviconURL))
+        }
+        // Pointer near the tab's leading edge, as where it was grabbed.
+        panel.setFrameOrigin(NSPoint(x: screenPoint.x - 24, y: screenPoint.y - Self.size.height / 2))
+        if !panel.isVisible { panel.orderFrontRegardless() }
+    }
+
+    func hide() {
+        panel?.orderOut(nil)
+        shownTab = nil
+    }
+
+    private func makePanel() -> NSPanel {
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: Self.size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.level = .popUpMenu
+        panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
+        self.panel = panel
+        return panel
+    }
+
+    private struct Label: View {
+        let tab: Tab
+        let faviconURL: URL?
+
+        var body: some View {
+            HStack(spacing: 6) {
+                TabIcon(tab: tab, faviconURL: faviconURL).frame(width: 16, height: 16)
+                Text(displayTitle(for: tab))
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .frame(width: TabDragPreview.size.width, height: TabDragPreview.size.height)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+}
+
+/// Reports the window a view is in, as it moves between windows.
+private struct WindowReader: NSViewRepresentable {
+    let onWindow: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView { ReaderView(onWindow: onWindow) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    private final class ReaderView: NSView {
+        let onWindow: (NSWindow?) -> Void
+        init(onWindow: @escaping (NSWindow?) -> Void) {
+            self.onWindow = onWindow
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() { onWindow(window) }
     }
 }
 
@@ -172,7 +471,6 @@ private struct StripTab: View {
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
         .onHover { isHovered = $0 }
         .help(displayTitle(for: tab))
         .contextMenu {
@@ -187,46 +485,28 @@ private struct StripTab: View {
     }
 }
 
-/// Live reordering: the dragged tab slides in front of or behind the tab
-/// under the pointer. Resting on a tab's middle third targets a split instead.
-private struct StripDropDelegate: DropDelegate {
-    let target: UUID
-    let width: CGFloat
-    let store: WorkspaceStore
-    @Binding var dragging: UUID?
-    @Binding var splitTarget: UUID?
-    let onSplit: (UUID, UUID) -> Void
+/// The dragged tab: lifted above its neighbours with a soft shadow, drawn
+/// at the pointer, and kept out of the slide animation the others use.
+private struct LiftedTab: ViewModifier {
+    let offset: CGSize
+    let isLifted: Bool
+    /// Pulled away from the strip: shown smaller and faded, about to tear off.
+    var isTearing = false
 
-    private func canSplit(_ dragged: UUID) -> Bool {
-        var trial = store.workspace
-        return trial.splitTab(dragged, onto: target) != nil
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        guard let dragged = dragging, dragged != target else { return DropProposal(operation: .move) }
-        let x = info.location.x
-        if x > width * 0.3, x < width * 0.7, canSplit(dragged) {
-            if splitTarget != target { splitTarget = target }
-        } else {
-            if splitTarget == target { splitTarget = nil }
-            let after = x >= width / 2
-            let order = store.orderedTabIds
-            if let from = order.firstIndex(of: dragged), let to = order.firstIndex(of: target),
-               after ? from != to + 1 : from != to - 1 {
-                store.moveTab(dragged, nextTo: target, after: after)
-            }
-        }
-        return DropProposal(operation: .move)
-    }
-
-    func dropExited(info: DropInfo) {
-        if splitTarget == target { splitTarget = nil }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        if let dragged = dragging, splitTarget == target { onSplit(dragged, target) }
-        dragging = nil
-        splitTarget = nil
-        return true
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.regularMaterial)
+                    .padding(.vertical, 2)
+                    .opacity(isLifted ? 1 : 0)
+            )
+            .scaleEffect(isTearing ? 0.9 : (isLifted ? 1.04 : 1))
+            // The drag preview window carries it now.
+            .opacity(isTearing ? 0.3 : 1)
+            .shadow(color: .black.opacity(isLifted ? 0.28 : 0), radius: 10, y: 4)
+            .offset(offset)
+            .zIndex(isLifted ? 1 : 0)
+            .transaction { if isLifted { $0.animation = nil } }
     }
 }

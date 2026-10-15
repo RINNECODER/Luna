@@ -30,8 +30,15 @@ struct BrowserShellView: View {
     private var historyManager: HistoryManager { session.historyManager }
     private var activeProfile: BrowserProfile { profileManager.profile(for: sessionStore.activeProfileId) }
 
-    init(initialProfileId: UUID? = nil) {
-        _sessionStore = StateObject(wrappedValue: BrowserSessionStore(initialProfileId: initialProfileId))
+    /// nil for the main window; extra windows save their own workspace.
+    private let windowId: UUID?
+    /// A tab dragged here from another window, taken in on appear.
+    @State private var pendingTransfer: TabTransfer?
+
+    init(initialProfileId: UUID? = nil, windowId: UUID? = nil, adopting transfer: TabTransfer? = nil) {
+        self.windowId = windowId
+        _pendingTransfer = State(initialValue: transfer)
+        _sessionStore = StateObject(wrappedValue: BrowserSessionStore(initialProfileId: initialProfileId, windowId: windowId))
     }
 
     @State private var addressBarText: String = ""
@@ -226,6 +233,14 @@ struct BrowserShellView: View {
             }
             #endif
             web.tabManager = tabManager
+            if let transfer = pendingTransfer {
+                pendingTransfer = nil
+                adoptTransfer(transfer, replacingPlaceholder: true)
+            }
+            if windowId == nil {
+                // The main window brings back the extra windows open at last quit.
+                DispatchQueue.main.async { BrowserWindows.restoreSaved() }
+            }
             if tabManager.currentTab == nil {
                 _ = tabManager.newTab(url: nil)
                 if let id = tabManager.currentTab {
@@ -394,7 +409,17 @@ struct BrowserShellView: View {
             // ⌘L-revealed bar tucks away once editing ends, unless the pointer is on it.
             if !focused && !topBarHovering { topBarPeeking = false }
         }
-        .onChange(of: hostWindow) { _, _ in applyTrafficLights() }
+        .onChange(of: hostWindow) { _, window in
+            applyTrafficLights()
+            // Other windows can drop tabs into this one.
+            if let window {
+                TabDropTargets.shared.register(.init(
+                    window: window,
+                    profileId: { sessionStore.activeProfileId },
+                    adopt: { adoptTransfer($0, replacingPlaceholder: true, droppedAt: $1) }
+                ))
+            }
+        }
         .onChange(of: tabManager.currentTab) { _, _ in
             askOnPageVisible = false
             web.linkPreview = nil
@@ -522,6 +547,7 @@ struct BrowserShellView: View {
             split: { dropped, target in
                 if session.workspace.splitTab(dropped, onto: target) != nil { switchToTab(dropped) }
             },
+            tearOff: { tearOff($0, at: $1) },
             submitAddress: { applyAddressBarSubmit() },
             goHome: { goHome() },
             toggleAI: { toggleAIPanel() },
@@ -638,7 +664,8 @@ struct BrowserShellView: View {
                 newTab: { newTab() },
                 store: session.workspace,
                 tidyTitle: { session.tidyTitle($0) },
-                tidyToday: { session.tidyToday() }
+                tidyToday: { session.tidyToday() },
+                tearOff: { tearOff($0, at: $1) }
             ),
             onToggleSidebar: toggleSidebar,
             onShowDownloads: { showDownloadsHub = true },
@@ -962,27 +989,60 @@ struct BrowserShellView: View {
     }
 
     private func openProfileInNewWindow(_ profile: BrowserProfile) {
-        let newWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        // Programmatic NSWindows default to isReleasedWhenClosed = true, which crashes
-        // under ARC when the window closes. Keep a strong reference until it closes instead.
-        newWindow.isReleasedWhenClosed = false
-        newWindow.titlebarAppearsTransparent = true
-        newWindow.titleVisibility = .hidden
-        newWindow.styleMask.insert(.fullSizeContentView)
-        newWindow.isMovableByWindowBackground = false
-        newWindow.tabbingMode = .disallowed
-        newWindow.center()
-        newWindow.title = "\(profile.name) — Luna"
+        BrowserWindows.open(profileId: profile.id)
+    }
 
-        let shellView = BrowserShellView(initialProfileId: profile.id)
-        newWindow.contentView = NSHostingView(rootView: shellView)
-        ProfileWindowRegistry.shared.retain(newWindow)
-        newWindow.makeKeyAndOrderFront(nil)
+    // MARK: - Moving tabs between windows
+
+    /// A tab dragged out of this window: it goes to the Luna window under the
+    /// pointer (same profile), where its tab strip shows it, or to a new
+    /// window there. A window's only tab can join another window (an extra
+    /// window then closes) but doesn't open a new one.
+    private func tearOff(_ id: UUID, at screenPoint: CGPoint) {
+        let target = TabDropTargets.shared.target(at: screenPoint, from: hostWindow)
+        let isLastTab = tabManager.tabCount() <= 1
+        guard !isLastTab || target != nil else { return }
+        let liveState = web.webViewIfLoaded(for: id)?.interactionState as? Data
+        guard var tab = session.workspace.takeTab(id) else { return }
+        if let liveState { tab.interactionState = liveState }
+        web.removeWebView(for: id)
+        tabsWithPanelOpen.remove(id)
+        if let current = tabManager.currentTab {
+            web.setActiveTab(current)
+            syncAddressBarFromCurrentTab()
+        }
+        let transfer = TabTransfer(tab: tab)
+        if let target {
+            target.adopt(transfer, screenPoint)
+            target.window?.makeKeyAndOrderFront(nil)
+            if isLastTab {
+                if windowId != nil { hostWindow?.close() } else { newTab() }
+            }
+        } else {
+            BrowserWindows.open(profileId: sessionStore.activeProfileId, adopting: transfer, at: screenPoint,
+                                size: hostWindow?.frame.size ?? CGSize(width: 1200, height: 800))
+        }
+    }
+
+    /// Takes in a tab from another window and shows it. A new window's
+    /// untouched blank tab makes way for it.
+    private func adoptTransfer(_ transfer: TabTransfer, replacingPlaceholder: Bool, droppedAt screenPoint: CGPoint? = nil) {
+        let store = session.workspace
+        let placeholders = store.orderedTabIds.filter { id in
+            let url = store.tab(id)?.url
+            return (url == nil || url?.absoluteString == "about:blank") && session.chatStore.messages(for: id).isEmpty
+        }
+        let slot = screenPoint.flatMap { TabStripDropZone.zone(for: hostWindow)?.insertion(atScreen: $0) }
+        store.adopt(transfer.tab, nextTo: slot?.target, after: slot?.after ?? true)
+        if replacingPlaceholder, placeholders.count == store.orderedTabIds.count - 1 {
+            for id in placeholders {
+                _ = store.takeTab(id)
+                web.removeWebView(for: id)
+            }
+        }
+        session.ensureLoaded(transfer.tab.id)
+        web.setActiveTab(transfer.tab.id)
+        syncAddressBarFromCurrentTab()
     }
 
     // MARK: - Helpers
@@ -1413,21 +1473,6 @@ struct BrowserShellView: View {
 // MARK: - Profile window registry
 
 /// Keeps profile windows alive (isReleasedWhenClosed = false) and releases them on close.
-final class ProfileWindowRegistry {
-    static let shared = ProfileWindowRegistry()
-    private var windows: Set<NSWindow> = []
-    private init() {}
-
-    func retain(_ window: NSWindow) {
-        windows.insert(window)
-        NotificationCenter.default.addObserver(
-            forName: NSWindow.willCloseNotification, object: window, queue: .main
-        ) { [weak self] note in
-            guard let closed = note.object as? NSWindow else { return }
-            self?.windows.remove(closed)
-        }
-    }
-}
 
 // MARK: - Downloads hub (recent downloads; open / reveal in Finder)
 
@@ -1849,6 +1894,69 @@ private struct BrowserFindBar: View {
 
 private final class WindowDragRegionNSView: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Browser windows own their title bar (`TitlebarDragOwnership`), so AppKit
+    /// no longer drags from here by itself: start the move, like Chromium's
+    /// frame view does for caption areas.
+    override func mouseDown(with event: NSEvent) {
+        guard let window else { return }
+        if event.clickCount == 2 {
+            window.performTitlebarDoubleClickAction()
+        } else {
+            window.performDrag(with: event)
+        }
+    }
+}
+
+extension NSWindow {
+    /// What double-clicking a title bar does, per System Settings (Chromium's
+    /// `-[NativeWidgetMacNSWindow sendEvent:]` reads the same default).
+    func performTitlebarDoubleClickAction() {
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "Minimize": performMiniaturize(nil)
+        case "None": break
+        default: performZoom(nil)
+        }
+    }
+}
+
+/// Makes a browser window's content own its whole title-bar band, the way
+/// Chromium's `BridgedContentView` does: its `_opaqueRectForWindowMoveWhenInTitlebar`
+/// (undocumented AppKit) returns the view's bounds, so the window server never
+/// starts a window move from there and every press reaches our views. Tabs then
+/// get their own drags, and empty chrome moves the window through
+/// `WindowDragRegionView`. macOS 27 decides title-bar drags this way and ignores
+/// `mouseDownCanMoveWindow`.
+///
+/// SwiftUI owns the content view, so the method goes on its class at runtime,
+/// answering for claimed windows only; other windows sharing that class (Settings)
+/// keep AppKit's behavior.
+enum TitlebarDragOwnership {
+    private static let claimed = NSHashTable<NSWindow>.weakObjects()
+    private static var patched: Set<ObjectIdentifier> = []
+    private static let selector = NSSelectorFromString("_opaqueRectForWindowMoveWhenInTitlebar")
+
+    static func claim(_ window: NSWindow) {
+        guard let content = window.contentView else { return }
+        claimed.add(window)
+        let cls: AnyClass = type(of: content)
+        guard patched.insert(ObjectIdentifier(cls)).inserted else { return }
+
+        typealias Original = @convention(c) (NSView, Selector) -> NSRect
+        let original = class_getInstanceMethod(cls, selector).map {
+            unsafeBitCast(method_getImplementation($0), to: Original.self)
+        }
+        let replacement: @convention(block) (NSView) -> NSRect = { view in
+            if let window = view.window, claimed.contains(window), view === window.contentView {
+                return view.bounds
+            }
+            return original?(view, selector) ?? .zero
+        }
+        let types = class_getInstanceMethod(cls, selector).flatMap { method_getTypeEncoding($0) }
+            .map { String(cString: $0) } ?? "{CGRect={CGPoint=dd}{CGSize=dd}}@:"
+        class_replaceMethod(cls, selector, imp_implementationWithBlock(replacement), types)
+    }
 }
 
 /// Place this only in the empty toolbar space (e.g. after tabs and + button).
@@ -1882,6 +1990,7 @@ struct TitlebarConfigurator: NSViewRepresentable {
             window.styleMask.insert(.fullSizeContentView)
             window.isMovableByWindowBackground = false
             window.tabbingMode = .disallowed
+            TitlebarDragOwnership.claim(window)
 
             context.coordinator.isFullScreen = window.styleMask.contains(.fullScreen)
 

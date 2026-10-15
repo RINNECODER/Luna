@@ -66,6 +66,56 @@ struct ChatThinkingRow: View {
     }
 }
 
+/// Little things Luna says while it works (in the spirit of Claude Code's
+/// spinner words). One is picked when the row appears, then rotates.
+enum LunaSayings {
+    static let all = [
+        "Let's get crackalackin'",
+        "Consulting the moon",
+        "Waxing poetic",
+        "Herding electrons",
+        "Brewing some thoughts",
+        "Untangling the internet",
+        "Moonwalking through tabs",
+        "Doing a little moon math",
+        "Asking the stars",
+        "Rummaging through the cosmos",
+        "Polishing the crescent",
+        "Waking up the hamsters",
+        "Connecting the dots",
+        "Noodling on it",
+        "Cooking something up",
+        "Riding the tide",
+        "Sharpening the pencils",
+        "Reading between the lines",
+        "Flipping through the web",
+        "Making it make sense",
+    ]
+
+    static func random(excluding current: String? = nil) -> String {
+        all.filter { $0 != current }.randomElement() ?? all[0]
+    }
+}
+
+/// "Thinking…" with personality: a random saying that changes every few seconds.
+struct LunaSayingRow: View {
+    let fontSize: CGFloat
+    @State private var saying = LunaSayings.random()
+
+    var body: some View {
+        ChatThinkingRow(text: saying + "\u{2026}", fontSize: fontSize)
+            .contentTransition(.opacity)
+            .animation(.easeInOut(duration: 0.3), value: saying)
+            .task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(3.5))
+                    saying = LunaSayings.random(excluding: saying)
+                }
+            }
+            .accessibilityLabel("Luna is thinking")
+    }
+}
+
 struct ChatErrorBanner: View {
     let message: String
     let fontSize: CGFloat

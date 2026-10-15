@@ -216,10 +216,7 @@ struct CommandSurfaceView: View {
                 .padding(.bottom, 2)
             Text("Ask about this page")
                 .font(LunaType.brand(size: 22))
-                .foregroundStyle(
-                    LinearGradient(colors: [Color.white.opacity(0.95), Color.white.opacity(0.6)],
-                                   startPoint: .top, endPoint: .bottom)
-                )
+                .foregroundStyle(Color.white.opacity(0.92))
                 .padding(.bottom, 8)
             Text("Summarize, explain, or find anything, with this page and any tabs or files you add as context.")
                 .font(.system(size: 12))
@@ -251,7 +248,7 @@ struct CommandSurfaceView: View {
     }
 
     private func loadingIndicator() -> some View {
-        ChatThinkingRow(text: "Thinking\u{2026}", fontSize: chatFontSize)
+        LunaSayingRow(fontSize: chatFontSize)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityLabel("Assistant is thinking")
     }

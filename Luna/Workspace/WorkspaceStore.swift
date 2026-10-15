@@ -288,6 +288,39 @@ final class WorkspaceStore: ObservableObject {
         perform("Move") { $0.moveTab(tabId, nextTo: targetId, after: after) }
     }
 
+    /// Takes a tab out of this window to move it to another one: removed
+    /// without archiving, its neighbour (or split partner) selected. Returns it.
+    func takeTab(_ tabId: UUID) -> Tab? {
+        guard workspace.tabs[tabId] != nil else { return nil }
+        var taken: Tab?
+        perform("Move Tab to Window") { ws in
+            let wasActive = ws.activeTabId == tabId
+            let spaceId = ws.spaceId(containing: tabId) ?? ws.activeSpaceId
+            let order = ws.orderedTabIds(inSpace: spaceId)
+            let partner = ws.splitGroup(containing: tabId)?.panes.first { $0 != tabId }
+            taken = ws.removeTab(tabId)
+            taken?.savedURL = nil
+            if wasActive, let i = order.firstIndex(of: tabId) {
+                let remaining = order.filter { $0 != tabId }
+                let next = partner ?? (remaining.isEmpty ? nil : remaining[max(0, min(i - 1, remaining.count - 1))])
+                if let si = ws.spaceIndex(spaceId) { ws.spaces[si].activeTabId = next }
+            }
+        }
+        return taken
+    }
+
+    /// Brings in a tab from another window, at the end of Today (or next to
+    /// `target`, where it was dropped in the tab strip), and selects it.
+    func adopt(_ tab: Tab, nextTo target: UUID? = nil, after: Bool = true) {
+        var tab = tab
+        tab.lastActiveAt = Date()
+        perform("Move Tab to Window") { ws in
+            ws.addTab(tab, placement: .section(.today, spaceId: nil))
+            if let target, ws.tabs[target] != nil { ws.moveTab(tab.id, nextTo: target, after: after) }
+            Self.activate(tab.id, in: &ws)
+        }
+    }
+
     func removeFromSplit(_ tabId: UUID) {
         perform("Remove from Split") { _ = $0.detachTabFromAnySplit(tabId) }
     }
@@ -415,6 +448,13 @@ final class WorkspacePersistence {
         self.fileURL = fileURL
     }
 
+    /// An extra window's workspace, saved next to the profile's main one.
+    static func forWindow(_ windowId: UUID, profileId: UUID, fileManager: FileManager = .default) -> WorkspacePersistence {
+        let main = forProfile(profileId, fileManager: fileManager)
+        return WorkspacePersistence(fileURL: main.fileURL.deletingLastPathComponent()
+            .appendingPathComponent("window-\(windowId.uuidString).json"))
+    }
+
     static func forProfile(_ profileId: UUID, fileManager: FileManager = .default) -> WorkspacePersistence {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("Luna/Profiles/\(profileId.uuidString)", isDirectory: true)
@@ -464,7 +504,9 @@ enum WorkspaceOwnership {
     }
     private static var owners: [UUID: WeakStore] = [:]
 
-    static func makeStore(for profileId: UUID) -> WorkspaceStore {
+    static func makeStore(for profileId: UUID, windowId: UUID? = nil) -> WorkspaceStore {
+        // Extra windows always save to their own file.
+        if let windowId { return WorkspaceStore(persistence: .forWindow(windowId, profileId: profileId)) }
         if owners[profileId]?.store != nil {
             return WorkspaceStore(persistence: nil)
         }

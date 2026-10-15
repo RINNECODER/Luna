@@ -47,9 +47,9 @@ final class ProfileSession: ObservableObject {
 
     /// - Parameter workspace: injected store (tests); by default the profile's
     ///   persisted workspace when no other window owns it, else in-memory.
-    init(profileId: UUID, dataStore: WKWebsiteDataStore, workspace: WorkspaceStore? = nil) {
+    init(profileId: UUID, dataStore: WKWebsiteDataStore, workspace: WorkspaceStore? = nil, windowId: UUID? = nil) {
         self.profileId = profileId
-        self.workspace = workspace ?? WorkspaceOwnership.makeStore(for: profileId)
+        self.workspace = workspace ?? WorkspaceOwnership.makeStore(for: profileId, windowId: windowId)
         self.tabManager = TabManager(store: self.workspace)
         let stores = ProfileStoreRegistry.stores(for: profileId)
         self.historyManager = stores.history
@@ -219,10 +219,11 @@ final class BrowserSessionStore: ObservableObject {
     private var activeSessionSubscription: AnyCancellable?
     private var terminationObserver: NSObjectProtocol?
 
-    init(initialProfileId: UUID? = nil, profileManager: ProfileManager = .shared) {
+    /// - Parameter windowId: set for extra windows, which save their own workspace.
+    init(initialProfileId: UUID? = nil, windowId: UUID? = nil, profileManager: ProfileManager = .shared) {
         self.profileManager = profileManager
         let id = profileManager.validProfileId(initialProfileId ?? profileManager.lastActiveProfileId)
-        let session = ProfileSession(profileId: id, dataStore: profileManager.dataStore(for: id))
+        let session = ProfileSession(profileId: id, dataStore: profileManager.dataStore(for: id), windowId: windowId)
         self.activeProfileId = id
         self.activeSession = session
         self.sessions[id] = session

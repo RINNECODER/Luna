@@ -166,12 +166,7 @@ struct SmartSearchView: View {
                 // Quiet greeting above the bar (Siri / ChatGPT-app style)
                 Text(Self.greeting())
                     .font(LunaType.brand(size: 30))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.95), Color.white.opacity(0.6)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
+                    .foregroundStyle(Color.white.opacity(0.92))
                     .padding(.bottom, 28)
                     .accessibilityHidden(true)
 
@@ -374,12 +369,8 @@ struct SmartSearchView: View {
             }
 
             if isSending && thinkingSteps.allSatisfy({ $0.isComplete }) {
-                HStack(spacing: 4) {
-                    ForEach(0..<3, id: \.self) { _ in
-                        Circle().fill(Color.white.opacity(0.4)).frame(width: 5, height: 5)
-                    }
-                }
-                .transition(.opacity)
+                LunaSayingRow(fontSize: fontSize)
+                    .transition(.opacity)
             }
         }
         .frame(maxWidth: ChatTokens.chatMaxWidth, alignment: .leading)

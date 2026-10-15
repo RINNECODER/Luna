@@ -44,6 +44,8 @@ struct SidebarActions {
     /// Luna Max: AI-rename a tab, and group Today tabs into folders.
     var tidyTitle: (UUID) -> Void = { _ in }
     var tidyToday: () -> Void = {}
+    /// A tab dragged out of the window, released at a screen point.
+    var tearOff: (UUID, CGPoint) -> Void = { _, _ in }
 }
 
 /// Native source-list sidebar (NSOutlineView): pinned tabs, a divider, a New
@@ -385,6 +387,15 @@ struct SidebarOutline: NSViewRepresentable {
                 actions.activate(dragged)
             }
             return true
+        }
+
+        /// Tab rows dropped outside the window move to their own window.
+        func outlineView(_ outlineView: NSOutlineView, draggingSession session: NSDraggingSession,
+                         endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+            guard operation.isEmpty, let window = outlineView.window, !window.frame.contains(screenPoint),
+                  let id = session.draggingPasteboard.string(forType: LunaDrag.tabType).flatMap(UUID.init(uuidString:)),
+                  actions.store.workspace.tabs[id] != nil else { return }
+            actions.tearOff(id, screenPoint)
         }
 
         static func draggedId(_ info: NSDraggingInfo) -> UUID? {

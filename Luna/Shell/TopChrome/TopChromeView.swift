@@ -7,6 +7,8 @@ struct TopChromeActions {
     var newTab: () -> Void
     /// Dropped tab, target tab: open them in split view.
     var split: (UUID, UUID) -> Void
+    /// Tab dragged out of the strip, released at a screen point.
+    var tearOff: (UUID, CGPoint) -> Void = { _, _ in }
     var submitAddress: () -> Void
     var goHome: () -> Void
     var toggleAI: () -> Void
@@ -142,13 +144,13 @@ struct TopChromeView: View {
             onActivate: actions.activate,
             onClose: actions.close,
             onNewTab: actions.newTab,
-            onSplit: actions.split
+            onSplit: actions.split,
+            onTearOff: actions.tearOff
         )
     }
 
     private var toolbarIcons: some View {
         HStack(spacing: 2) {
-            ExtensionButtons(host: extensions)
             ToolbarIconButton(systemName: "sparkles", help: "Luna AI (⌘E)", action: actions.toggleAI)
             ZStack(alignment: .topTrailing) {
                 ToolbarIconButton(systemName: "arrow.down.circle", help: "Downloads", action: actions.showDownloads)
@@ -164,7 +166,7 @@ struct TopChromeView: View {
                 }
             }
             profileControl
-            MoreMenu(actions: actions)
+            MoreMenu(actions: actions, extensions: extensions)
         }
         .background(NonDraggableWindowView())
     }
@@ -173,6 +175,7 @@ struct TopChromeView: View {
 /// The "⋯" menu: tab, history, downloads and settings commands.
 struct MoreMenu: View {
     let actions: TopChromeActions
+    let extensions: ExtensionHost
 
     var body: some View {
         Menu {
@@ -182,6 +185,7 @@ struct MoreMenu: View {
             Button("History", action: actions.showHistory)
             Button("Downloads", action: actions.showDownloads)
             Divider()
+            ExtensionsMenuItems(host: extensions)
             SettingsLink { Text("Settings…") }
         } label: {
             Image(systemName: "ellipsis")
@@ -193,6 +197,7 @@ struct MoreMenu: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .background(PopupAnchor { extensions.menuAnchor = $0 })
         .help("More")
     }
 }

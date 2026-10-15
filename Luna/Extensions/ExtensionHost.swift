@@ -14,6 +14,8 @@ final class ExtensionHost: NSObject, ObservableObject, WKWebExtensionControllerD
     private var cancellables: Set<AnyCancellable> = []
     /// Toolbar buttons register their views so popups can anchor to them.
     var popupAnchors: [UUID: NSView] = [:]
+    /// The ⋯ menu button: popups for actions run from the menu open here.
+    weak var menuAnchor: NSView?
     /// Bumped when an extension's action (icon, badge, title) changes.
     @Published private(set) var actionRevision = 0
 
@@ -205,6 +207,8 @@ final class ExtensionHost: NSObject, ObservableObject, WKWebExtensionControllerD
         guard let popover = action.popupPopover else { return completionHandler(nil) }
         let recordId = contexts.first { $0.value === context }?.key
         if let id = recordId, let anchor = popupAnchors[id], anchor.window != nil {
+            popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
+        } else if let anchor = menuAnchor, anchor.window != nil {
             popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .maxY)
         } else if let contentView = NSApp.keyWindow?.contentView {
             let rect = NSRect(x: contentView.bounds.maxX - 60, y: contentView.bounds.maxY - 40, width: 1, height: 1)
